@@ -1,0 +1,187 @@
+#!/usr/bin/env python
+
+"""This Python script computes the time autocorrelation function
+   using the fast Fourier transform method."""
+
+import sys
+import os
+import time
+import numpy as np
+import getopt
+import glob
+
+def usage():
+  print 'acf:'
+  print '  -f, --fin             Input file name'
+  print '  -c, --chains          Chains'
+  print '  -m, --monomers        Monomers per chain'
+  print '  -L, --box             Specify side length of cubic box'
+  print '  -t, --timestep        Time step (tau)'
+  print '  -p, --percent_early   Percentage of early data to ignore'
+  print '  -q, --percent_late    Percentage of late data to ignore'
+  print '  -r, --residual-no     Flag to not remove residual values'
+  print '  -T, --thermal-energy  Specify kT'
+  print '  -v, --viscosity       Flag to call eta script to compute viscosity'
+  print '  -h, --help            Help menu'
+  print '                        Defaults: -f *_pxy_pxz_pyz.dat -t 0.01 -p 0 -q 0 -T 1.0'
+  print '                        Example: tcsh% acf -f 200_6_pxy_pxz_pyz.dat -c 200 -m 400 -t 0.01'
+  print '                        Important: -c and -m (with rho=0.85) or -L must be specified (no dictionary)'
+
+try:
+  options, args = getopt.getopt(sys.argv[1:], \
+                               'hf:c:m:t:p:q:rL:T:v', \
+                              ['help', 'fin=', 'chains=', 'monomers=', 'timestep=', \
+                               'percent_early=', 'percent_late=', 'residual-no', \
+                               'box=', 'thermal-energy=', 'viscosity'])
+
+except getopt.GetoptError, err:
+  # print help information and exit:
+  print str(err) # will print something like "option -a not recognized"
+  usage()
+  sys.exit(2)
+
+# defaults
+fin_default = glob.glob('*_pxy_pxz_pyz.dat')
+fin = ''
+chains = 0
+monomers = 0
+timestep = 0.01
+percent_early = 0
+percent_late = 0
+residual = True
+L = -1
+kT = 1.0
+viscosity = False
+
+for option, value in options:
+  if option in ('-h', '--help'):
+    usage()
+    sys.exit()
+  elif option in ('-f', '--fin'):
+    fin = value
+  elif option in ('-c', '--chains'):
+    chains = int(value)
+  elif option in ('-m', '--monomers'):
+    monomers = int(value)
+  elif option in ('-L', '--box'):
+    L = float(value)
+  elif option in ('-t', '--timestep'):
+    timestep = float(value)
+  elif option in ('-p', '--percent_early'):
+    percent_early = float(value)
+  elif option in ('-q', '--percent_late'):
+    percent_late = float(value)
+  elif option in ('-r', '--residual-no'):
+    residual = False
+  elif option in ('-T', '--thermal-energy'):
+    kT = float(value)
+  elif option in ('-v', '--viscosity'):
+    viscosity = True
+  else:
+    assert False, 'Command line error.'
+
+# data file
+if(fin == '' and len(fin_default) == 1):
+  fin = fin_default[0]
+elif(fin == '' and len(fin_default) == 0):
+  print 'Input file not specified. Exiting ...'
+  sys.exit(1)
+
+# volume of box
+if(L < 0.0):
+  vol = (chains * monomers) / 0.85
+  L = vol**(1.0/3.0)
+  print '\nDensity assumed to be 0.85.\n'
+else:
+  vol = L**3
+
+# read and store file contents
+a0 = []
+a1 = []
+a2 = []
+a3 = []
+f = open(fin)
+for line in f:
+  s = line.split()
+  a0.append(int(s[0]))
+  a1.append(float(s[1]))
+  a2.append(float(s[2]))
+  a3.append(float(s[3]))
+f.close()
+
+# check that values are uniformly spaced
+spacing = a0[1] - a0[0]
+for i in range(len(a0) - 1):
+  if(a0[i+1] - a0[i] != spacing):
+    print 'ERROR: data is not uniformly spaced. Exiting ...'
+    sys.exit(1)
+
+if(percent_early != 0 or percent_late != 0):
+  num = len(a1)
+  start_index_early = 0
+  if(percent_early != 0): start_index_early = int((percent_early / 100.0) * num)
+  end_index_late = num
+  if(percent_late != 0): end_index_late = int((1.0 - (percent_late / 100.0)) * num)
+  a1 = a1[start_index_early:end_index_late]
+  a2 = a2[start_index_early:end_index_late]
+  a3 = a3[start_index_early:end_index_late]
+
+a1 = np.array(a1)
+a2 = np.array(a2)
+a3 = np.array(a3)
+
+if(residual):
+  res_a1 = np.mean(a1)
+  res_a2 = np.mean(a2)
+  res_a3 = np.mean(a3)
+  a1 = a1 - res_a1
+  a2 = a2 - res_a2
+  a3 = a3 - res_a3
+  print 'lines, residual or <sigma_ij>', a1.size, res_a1, res_a2, res_a3
+  print 'lines, residual or <sigma_ij>', a1.size, np.sum(a1), np.sum(a2), np.sum(a3)
+
+# write out receipt
+print fin, chains, monomers, timestep, spacing, percent_early, percent_late, residual, L, kT
+f = open('.acf_' + str(int(time.time())), 'w')
+print >> f, time.asctime()
+print >> f, 'input file  chains  monomers  timestep  spacing  percent_early  percent_late  residual  L  kT'
+print >> f, fin, chains, monomers, timestep, spacing, percent_early, percent_late, residual, L, kT
+print >> f, 'number of lines of data'
+print >> f, a1.size
+if(residual):
+  print >> f, 'Residual or ave stresses'
+  print >> f, res_a1, res_a2, res_a3
+f.close()
+
+def autocorr(x):
+  """Takes a list and returns the autocorrelation function as a numpy array."""
+  s = np.fft.fft(x, n = 2 * len(x))
+  acf = np.real(np.fft.ifft(s * np.conjugate(s)))[0:len(x)]
+  for i in range(acf.size):
+    acf[i] = acf[i] / (acf.size - i)
+  return acf
+
+sys.stdout.write('Starting pxy ... ')
+b1 = autocorr(a1)
+sys.stdout.write('done.\n')
+sys.stdout.write('Starting pxz ... ')
+b2 = autocorr(a2)
+sys.stdout.write('done.\n')
+sys.stdout.write('Starting pyz ... ')
+b3 = autocorr(a3)
+sys.stdout.write('done.\n')
+
+b = (b1 + b2 + b3) / 3.0
+
+outfile = fin + '.acf'
+while(outfile[0:3] == '../'):
+  outfile = outfile[3:]
+if(percent_early != 0): outfile = outfile + '.p' + str(int(percent_early))
+if(percent_late != 0): outfile = outfile + '.q' + str(int(percent_late))
+f = open(outfile, 'w')
+for i in range(b.size):
+  f.write('%.8e %.6e\n' % (timestep * spacing * i, vol * b[i] / kT))
+f.close()
+
+if(viscosity):
+  os.system('eta -f ' + outfile + '\n')

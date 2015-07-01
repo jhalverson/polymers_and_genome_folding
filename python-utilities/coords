@@ -1,0 +1,310 @@
+#!/usr/bin/env python
+
+"""This Python utility may be used to create the ATOMS section of a LAMMPS
+   data file from a custom dump file. There are five cases: (1) pure rings
+   with no fixed atoms, (2) pure rings with fixed atoms, (3) linear plus
+   rings with no fixed atoms, (4) linear plus rings with the linear fixed
+   and (5) linear and rings with both fixed. A seed may be specified to
+   fix different atoms.
+
+   Use pypolymer and combine cases to three. Store format once in fmt.
+   Can this be combined with bonds_angles?"""
+
+import sys
+import getopt
+import glob
+import random
+
+def usage():
+  print 'coords:'
+  print '  -f, --fin       Input file name'
+  print '  -w, --wrap      Flag to wrap coordinates by COM'
+  print '  -l, --linear    Flag to fix end monomers in linear'
+  print '  -r, --rings     Flag to fix opposite monomers in rings'
+  print '  -s, --seed      Seed for RNG (for rings flag)'
+  print '  -c, --types     Flag to give each chain a different type'
+  print '  -b, --binary    Flag where rings are type 1 and linear are type 2'
+  print '  -o, --fout      Output file name (default coords.out)'
+  print '  -h, --help      Help menu'
+  print ''
+  print '                  Defaults: -f=rings* -o=coords.out -s 10'
+  print '                  Note: LAMMPS angle or bond style is id molecule type'
+
+try:
+  options, args = getopt.getopt(sys.argv[1:], 'hcbf:o:rls:w', ['help', 'types', 'binary', \
+                                                               'fin=', 'fout=', 'rings', \
+                                                               'linear','seed=', 'wrap'])
+except getopt.GetoptError, err:
+  print str(err)
+  usage()
+  sys.exit(2)
+
+# defaults
+chains = False
+binary = False
+rings = False
+linear = False
+seed_rng = 10
+fout = 'coords.out'
+wrap = False
+
+files = glob.glob('rings*')
+if(len(files) > 0):
+  fin = files[0]
+else:
+  fin = ''
+
+for option, value in options:
+  if option in ('-h', '--help'):
+    usage()
+    sys.exit()
+  elif option in ('-c', '--chains'):
+    chains = True
+  elif option in ('-b', '--binary'):
+    binary = True
+  elif option in ('-r', '--rings'):
+    rings = True
+  elif option in ('-l', '--linear'):
+    linear = True
+  elif option in ('-s', '--seed'):
+    seed_rng = int(value)
+  elif option in ('-f', '--fin'):
+    fin = value
+  elif option in ('-o', '--fout'):
+    fout = value
+  elif option in ('-w', '--wrap'):
+    wrap = True
+  else:
+    assert False, 'Command line error.'
+
+if(fin == ''):
+  print 'Specify a input file. Exiting ...'
+  sys.exit(1)
+
+f = open(fin)
+r = f.readlines()
+f.close()
+
+total_particles = int(r[3])
+xmin, xmax = map(float, r[5].split()[0:2])
+ymin, ymax = map(float, r[6].split()[0:2])
+zmin, zmax = map(float, r[7].split()[0:2])
+Lx = xmax - xmin
+Ly = ymax - ymin
+Lz = zmax - zmin
+rho = total_particles / (Lx * Ly * Lz)
+if(abs(1.0 - rho/0.85) > 0.01):
+  rho = '%.4f)' % rho
+  print ''
+  print 'WARNING: Density is not 0.85 (rho =', rho
+  print ''
+
+p = []
+for atom in r[9:]:
+  line = atom.split()
+  id, x, y, z = int(line[0]), float(line[1]), float(line[2]), float(line[3])
+  p.append([id, x, y, z])
+p.sort(lambda u, v: cmp(u[0], v[0]))
+
+if(len(p) != total_particles):
+  print 'ERROR: Not all particles loaded. Exiting ...'
+  sys.exit(1)
+
+MM = {}
+MM[9000] = (0, 200, 45)
+MM[52000] = (10, 250, 200)
+MM[20000] = (200, 0, 100)
+MM[20001] = (200, 0, 100)
+MM[40000] = (200, 0, 200)
+MM[40001] = (200, 0, 200)
+MM[80000] = (200, 0, 400)
+MM[80001] = (200, 0, 400)
+MM[160000] = (200, 0, 800)
+MM[160001] = (200, 0, 800)
+MM[250000] = (2500, 0, 100)
+MM[250001] = (2500, 0, 100)
+MM[320000] = (200, 0, 1600)
+MM[40200] = (200, 1, 200)
+MM[40600] = (200, 3, 200)
+MM[41200] = (200, 6, 200)
+MM[42600] = (200, 13, 200)
+MM[45200] = (200, 26, 200)
+#MM[45200] = (169, 57, 200)
+MM[50000] = (0, 250, 200)
+MM[50001] = (0, 250, 200)
+MM[81200] = (200, 3, 400)
+MM[82400] = (200, 6, 400)
+MM[85200] = (200, 13, 400)
+MM[90400] = (200, 26, 400)
+#MM[90400] = (113, 113, 400)
+
+if(MM.has_key(total_particles)):
+  M_rings = MM[total_particles][0]
+  M_linear = MM[total_particles][1]
+  monomers = MM[total_particles][2]
+  monomers_half = monomers / 2
+else:
+  print 'ERROR: System not found in dictionary. Exiting ...'
+  sys.exit(1)
+
+print 'M_rings =', M_rings
+print 'M_linear =', M_linear
+print 'monomers =', monomers
+print 'fin =', fin
+print 'fout =', fout
+print 'rings =', rings
+print 'linear =', linear
+print 'seed =', seed_rng
+print 'chains =', chains
+print 'binary =', binary
+print 'wrap =', wrap
+
+if(wrap):
+  for i in range(M_rings + M_linear):
+    xcm = 0.0
+    ycm = 0.0
+    zcm = 0.0
+    for j in range(monomers):
+      pid = i * monomers + j
+      xcm = xcm + p[pid][1]
+      ycm = ycm + p[pid][2]
+      zcm = zcm + p[pid][3]
+    xcm = xcm / monomers
+    ycm = ycm / monomers
+    zcm = zcm / monomers
+
+    # shift chain such that the central box is between [0, L]
+    ix = int(xcm / Lx)
+    iy = int(ycm / Ly)
+    iz = int(zcm / Lz)
+
+    # correct in case of negative positions
+    if(xcm < 0.0): ix = ix - 1
+    if(ycm < 0.0): iy = iy - 1
+    if(zcm < 0.0): iz = iz - 1
+
+    # perform wrap
+    for j in range(monomers):
+      pid = i * monomers + j
+      p[pid][1] = p[pid][1] - ix * Lx
+      p[pid][2] = p[pid][2] - iy * Ly
+      p[pid][3] = p[pid][3] - iz * Lz
+
+if(rings == False and linear == False):
+
+  # rings free, linear free (linear may not be present)
+  if(binary):
+
+    outfile = open(fout, 'w')
+    for i in range(total_particles):
+      molecule_id = i / monomers + 1
+      if (i < M_rings * monomers):
+	outfile.write('%d %d %d %.5f %.5f %.5f\n' % (i + 1, molecule_id, 1, p[i][1], p[i][2], p[i][3]))
+      else:
+	outfile.write('%d %d %d %.5f %.5f %.5f\n' % (i + 1, molecule_id, 2, p[i][1], p[i][2], p[i][3]))
+    outfile.close()
+
+  elif(chains):
+
+    outfile = open(fout, 'w')
+    for i in range(total_particles):
+      molecule_id = i / monomers + 1
+      outfile.write('%d %d %d %.5f %.5f %.5f\n' % (i + 1, molecule_id, molecule_id, p[i][1], p[i][2], p[i][3]))
+    outfile.close()
+
+  else:
+
+    outfile = open(fout, 'w')
+    for i in range(total_particles):
+      molecule_id = i / monomers + 1
+      #molecule_id = molecule_id + 10
+      particle_type = 1
+      outfile.write('%d %d %d %.5f %.5f %.5f\n' % (i + 1 + 0*2000, molecule_id, particle_type, p[i][1], p[i][2], p[i][3]))
+    outfile.close()
+
+elif(M_linear == 0 and rings == True):
+
+  # rings fixed, no linear
+  random.seed(seed_rng)
+  ids = []
+  for i in range(M_rings):
+    num = int(monomers_half * random.random()) + 1
+    if(num < 1 or num > monomers_half): sys.exit(1)
+    tmp = i * monomers + num
+    ids.append(tmp)
+    ids.append(tmp + monomers_half)
+
+  outfile = open(fout, 'w')
+  for i in range(total_particles):
+    molecule_id = i / monomers + 1
+    if(ids.count(i + 1) == 0):
+      outfile.write('%d %d %d %.5f %.5f %.5f\n' % (i + 1, molecule_id, 1, p[i][1], p[i][2], p[i][3]))
+    else:
+      outfile.write('%d %d %d %.5f %.5f %.5f\n' % (i + 1, molecule_id, 2, p[i][1], p[i][2], p[i][3]))
+  outfile.close()
+
+elif(M_linear != 0 and rings == False and linear == True):
+
+  # rings free, linear fixed
+  ids = []
+  for i in range(M_linear):
+    num = 1
+    tmp = M_rings * monomers + i * monomers + num
+    ids.append(tmp)
+    ids.append(tmp + monomers - 1)
+
+  outfile = open(fout, 'w')
+  for i in range(total_particles):
+    molecule_id = i / monomers + 1
+    if(ids.count(i + 1) == 0):
+      outfile.write('%d %d %d %.5f %.5f %.5f\n' % (i + 1, molecule_id, 1, p[i][1], p[i][2], p[i][3]))
+    else:
+      outfile.write('%d %d %d %.5f %.5f %.5f\n' % (i + 1, molecule_id, 2, p[i][1], p[i][2], p[i][3]))
+  outfile.close()
+
+elif(M_linear != 0 and rings == True and linear == False):
+
+  # rings fixed, linear free
+  random.seed(seed_rng)
+  ids = []
+  for i in range(M_rings):
+    num = int(monomers_half * random.random()) + 1
+    if(num < 1 or num > monomers_half): sys.exit(1)
+    tmp = i * monomers + num
+    ids.append(tmp)
+    ids.append(tmp + monomers_half)
+
+  outfile = open(fout, 'w')
+  for i in range(total_particles):
+    molecule_id = i / monomers + 1
+    if(ids.count(i + 1) == 0):
+      outfile.write('%d %d %d %.5f %.5f %.5f\n' % (i + 1, molecule_id, 1, p[i][1], p[i][2], p[i][3]))
+    else:
+      outfile.write('%d %d %d %.5f %.5f %.5f\n' % (i + 1, molecule_id, 2, p[i][1], p[i][2], p[i][3]))
+  outfile.close()
+
+else:
+
+  # rings fixed, linear fixed
+  random.seed(seed_rng)
+  ids = []
+  for i in range(M_rings):
+    num = int(monomers_half * random.random()) + 1
+    if(num < 1 or num > monomers_half): sys.exit(1)
+    tmp = i * monomers + num
+    ids.append(tmp)
+    ids.append(tmp + monomers_half)
+  for i in range(M_linear):
+    num = 1
+    tmp = M_rings * monomers + i * monomers + num
+    ids.append(tmp)
+    ids.append(tmp + monomers - 1)
+
+  outfile = open(fout, 'w')
+  for i in range(total_particles):
+    molecule_id = i / monomers + 1
+    if(ids.count(i + 1) == 0):
+      outfile.write('%d %d %d %.5f %.5f %.5f\n' % (i + 1, molecule_id, 1, p[i][1], p[i][2], p[i][3]))
+    else:
+      outfile.write('%d %d %d %.5f %.5f %.5f\n' % (i + 1, molecule_id, 2, p[i][1], p[i][2], p[i][3]))
+  outfile.close()

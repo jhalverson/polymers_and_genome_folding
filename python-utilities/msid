@@ -1,0 +1,143 @@
+#!/usr/bin/env python
+
+"""This Python script computes the mean-square internal distances
+   for the linear chains of a ring/linear blend."""
+
+# use sys for printing compatibility between Python 2 & 3
+import sys
+import time
+import os
+import math
+import glob
+import pypolymer
+import getopt
+#import matplotlib
+#matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
+def usage():
+  print 'msid:'
+  print '  -h, --help    List options'
+  print '  -f, --file    Input file'
+  print '  -c, --chains  Number of total chains'
+  print '                Note: dictionary will find M_rings and M_linear'
+
+try:
+  options, args = getopt.getopt(sys.argv[1:], 'hf:c:', ['help', 'file=', 'chains='])
+except getopt.GetoptError, err:
+  # print help information and exit:
+  print str(err) # will print something like "option -a not recognized"
+  usage()
+  sys.exit(2)
+
+# defaults
+# none
+
+for option, value in options:
+  if option in ('-h', '--help'):
+    usage()
+    sys.exit()
+  elif option in ('-f', '--file'):
+    blockfiles = [value]
+  elif option in ('-c', '--chains'):
+    chains = int(value)
+  else:
+    assert False, 'Command line error.'
+
+resq = {}
+resq[100] = 263.79
+resq[200] = 538.94
+resq[400] = 1095.33
+resq[800] = 2164.92
+
+# initialization
+r2n = []
+
+for file in blockfiles:
+
+  fmanager = pypolymer.read_blockfile(file)
+  timestep = fmanager[0]
+  total_particles = fmanager[1]
+  M_rings = fmanager[2]; M_linear = fmanager[3]
+  monomers = fmanager[4]; monomers_half = fmanager[5]
+  x = fmanager[6]; y = fmanager[7]; z = fmanager[8]
+
+  if(file == blockfiles[0]):
+    total_particles1st = total_particles
+    sys.stdout.write('System parameters:\n')
+    sys.stdout.write('  M_rings = ' + str(M_rings) + '\n')
+    sys.stdout.write('  M_linear = ' + str(M_linear) + '\n')
+    sys.stdout.write('  N = ' + str(monomers) + '\n')
+    sys.stdout.write('  N/2 = ' + str(monomers_half) + '\n\n')
+  if(total_particles1st != total_particles):
+    sys.stderr.write('Change in total_particles (' + str(total_particles) + ').\n')
+    sys.exit()
+
+  sys.stdout.write('Working on ' + file + '\n')
+
+  norm = []
+  aveDistsq = []
+  for m in range(monomers):
+    norm.append(0)
+    aveDistsq.append(0.0)
+
+  for k in range(M_linear):
+    kstart = M_rings * monomers + k * monomers
+    kend = kstart + monomers
+    for i in range(kstart, kend - 1):
+      xi = x[i]
+      yi = y[i]
+      zi = z[i]
+      for j in range(i + 1, kend):
+        m = j - i
+        if(m >= monomers or m <= 0): sys.stderr.write('m>=N or m<=0\n')
+        dsq = (xi - x[j])**2 + (yi - y[j])**2 + (zi - z[j])**2
+        if(dsq > (0.97 * (monomers - 1))**2): sys.stderr.write('DSQ\n')
+        aveDistsq[m] = aveDistsq[m] + dsq / m
+        norm[m] = norm[m] + 1
+
+  for m in range(1, monomers):
+    aveDistsq[m] = aveDistsq[m] / norm[m]
+
+  print 'end-to-end distance squared', (monomers - 1) * aveDistsq[monomers - 1], resq[monomers]
+
+  if 0:
+    f = open('msdist_start.dat', 'w')
+    for m in range(1, monomers):
+      f.write('%d %10.5f\n' % (m, aveDistsq[m]))
+    f.close()
+
+  plt.rcParams['xtick.labelsize'] = 8
+  plt.rcParams['ytick.labelsize'] = 8
+  plt.rcParams['legend.numpoints'] = 1
+  plt.rcParams['text.usetex'] = True
+  plt.rcParams['axes.linewidth'] = 0.5
+
+  fin = '/people/thnfs/homes/halvers/research/contaminants/r2ij_limiting_distribution/dist_best_combined.dat'
+  x = pypolymer.get_data(fin, 0)
+  y = pypolymer.get_data(fin, 1)
+
+  w = 8.0 / 2.54
+  h = (3.0 / 4.0) * w
+
+  fig = plt.figure(1, figsize=(w, h))
+  plt.semilogx(x, y, 'r-', label='ideal')
+  plt.semilogx(range(0, monomers), aveDistsq, 'b-')
+  plt.ylim(0, 3.5)
+  plt.xlabel(r'$s$', fontsize=10)
+  plt.ylabel(r'$[d(s)]^2/s$', fontsize=10)
+  plt.title(r'$N=400$, $M_L=6$ (post 1e8 steps NVT mass=1e4)', fontsize=9)
+  lg = plt.legend(loc='lower left', prop={'size':8}, borderaxespad=1, handletextpad=0.5)
+  lg.get_frame().set_linewidth(0.25)
+
+  upper_right = (0.85, 0.85)
+  from_left = 0.17
+  lower_left = (from_left, 1.0 - ((upper_right[0] - from_left) + (1.0 - upper_right[1])))
+  fig.subplots_adjust(left=lower_left[0], right=upper_right[0], bottom=lower_left[1], top=upper_right[1], wspace=0.0, hspace=0.0)
+
+  if 1:
+    for ax in fig.axes:
+      plt.setp(ax.patch, color=(0.9, 0.9, 0.9))
+
+  plt.savefig('msid.png', dpi=200)
+  os.system('xv msid.png&')

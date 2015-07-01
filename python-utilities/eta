@@ -1,0 +1,116 @@
+#!/usr/bin/env python
+
+"""This Python script computes the zero-shear viscosity by
+   numerically integrating the shear relaxation modulus G(t)."""
+
+import sys
+import os
+import time
+import getopt
+import glob
+
+def usage():
+  print 'acf:'
+  print '  -f, --fin        Input file name'
+  print '  -o, --fout       Output file name'
+  print '  -r, --rectangle  Flag to use simple rectangle method'
+  print '  -h, --help       Help menu'
+  print '                   Defaults: -f=*.acf'
+  print '                   Example: tcsh% eta -f 200_6_pxy_pxz_pyz.dat.acf'
+
+try:
+  options, args = getopt.getopt(sys.argv[1:], 'hf:o:r', ['help', 'fin=', 'fout=', 'rectangle'])
+except getopt.GetoptError, err:
+  # print help information and exit:
+  print str(err) # will print something like "option -a not recognized"
+  usage()
+  sys.exit(2)
+
+# defaults
+fin = glob.glob('*.acf')
+if(len(fin) > 0): fin = fin[0]
+fout = -1
+rectangle = False
+
+for option, value in options:
+  if option in ('-h', '--help'):
+    usage()                     
+    sys.exit()                  
+  elif option in ('-f', '--fin'):
+    fin = value                  
+  elif option in ('-o', '--fout'):
+    fout = value                  
+  elif option in ('-r', '--rectangle'):
+    rectangle = True          
+  else:
+    assert False, 'Command line error.'
+
+if(len(fin) < 2):
+  print 'ERROR: file not found or specified.'
+  sys.exit(1)
+
+# read and store file contents
+f = open(fin)
+lines = f.readlines()
+f.close()
+lines = filter(lambda u: not u.strip().startswith('#'), lines)
+
+# load data
+t = []
+g = []
+for i in range(len(lines)):
+  line = lines[i]
+  s = line.split()
+  t.append(float(s[0]))
+  g.append(float(s[1]))
+
+dt = t[1] - t[0]
+
+if(rectangle):
+  sum_g_dt = 0.5 * dt * g[0]
+  viscosity = [sum_g_dt]
+  for i in xrange(1, len(g)):
+    sum_g_dt = sum_g_dt + dt * g[i]
+    viscosity.append(sum_g_dt)
+else:
+  # rectangles plus triangles
+  # len of viscosity is one less than above
+  area_sum = 0.0
+  viscosity = []
+  for i in range(len(g) - 1):
+    t1 = t[i]
+    g1 = g[i]
+    t2 = t[i + 1]
+    g2 = g[i + 1]
+
+    if(abs(1.0 - (t2 - t1) / dt) > 0.01): print 'WARNING: dt not uniform', t1, t2
+
+    if(g1 >= 0.0 and g2 >= 0.0):
+      rect_height = min(g1, g2)
+      tri_height = max(g1, g2)
+      area = rect_height * dt + 0.5 * dt * (tri_height - rect_height)
+    elif(g1 < 0.0 and g2 < 0.0):
+      rect_height = max(g1, g2)
+      tri_height = min(g1, g2)
+      area = rect_height * dt + 0.5 * dt * (tri_height - rect_height)
+    else:
+      slope = (g2 - g1) / (t2 - t1)
+      t_root = t1 - g1 / slope
+      area = 0.5 * g1 * (t_root - t1) + 0.5 * g2 * (t2 - t_root)
+
+    area_sum = area_sum + area
+    viscosity.append(area_sum)
+
+outfile = fin + '.viscosity'
+if(fout != -1): outfile = fout
+f = open(outfile, 'w')
+f.write('# ' + time.asctime() + '\n')
+f.write('# ' + os.getcwd() + '\n')
+f.write('# t (tau)  viscosity (epsilon tau / sigma**3)\n')
+for i in range(len(viscosity)):
+  if(rectangle):
+    f.write('%g %.6e\n' % (t[i], viscosity[i]))
+  else:
+    f.write('%g %.6e\n' % (t[i] + 0.5 * dt, viscosity[i]))
+f.close()
+sys.stdout.write(outfile + ' has been written.\n')

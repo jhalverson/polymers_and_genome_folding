@@ -1,0 +1,475 @@
+#!/usr/bin/env python
+
+"""This script loops over the specified block
+   files and produces a PDB file for each chain
+   up to show_chains sorted by zcm. Alternatively,
+   one may also specify a list of chains. Wrapped
+   coordinates are used. A PyMOL script is generated.
+   The chains may be written in either the monomer
+   or center-of-mass particle representation."""
+
+import sys
+import os
+import random
+import getopt
+import glob
+import pypolymer
+
+
+import numpy as np
+
+
+def usage():
+  print 'vismol:'
+  print '  -h, --help    Help menu'
+  print '  -f, --file    Input file'
+  print '  -s, --scale   Scale factor for the coordinates in PDB file'
+  print '  -v, --view    Specifiy file containing the view (e.g. pymol.view)'
+  print '  -w, --white   Draw linear chains white'
+  print '  -i, --img     Create a PNG image and quit'
+  print '      --ray     Ray trace the PNG image'
+  print '      --flip    Prevent chains from changing their box every frame'
+  print '  -u, --unwrap  Draw chains with unwrapped positions'
+  print '  -a, --awrap   Wrap atoms individually to central cell'
+  print '  -r, --rep     Flag for COM representation instead of monomers'
+  print '  -l, --leave   Leave the temporary PyMol files'
+  print '  -L, --box     Override the dump file value'
+  print '  -p, --pymol   Flag to not load result in PyMol'
+  print '  -c, --chains  Number of chains (cutoff the dictionary value)'
+  print '      --seed    Seed for RNG for colors'
+  print ''
+  print '                Note: Dictionary must be used to get M_rings, M_linear, monomers'
+  print ''
+  print '                --flip needs the file pymol.flip to start:'
+  print '                                                  x 3'
+  print '                                                  y 3'
+  print '                                                  z 3'
+
+try:
+  options, args = getopt.getopt(sys.argv[1:], \
+                               'hf:c:ps:L:urlwiav:', \
+                              ['help', 'file=', 'chains=', 'img', \
+                               'pymol', 'scale=', 'box', 'unwrap', 'awrap', \
+                               'rep', 'leave', 'white', 'ray', 'flip', 'view=', 'seed='])
+
+except getopt.GetoptError, err:
+  print str(err)
+  usage()
+  sys.exit(2)
+
+# defaults
+chains = 0
+L = -1.0
+pymol_load = 'yes'
+sf = 2.0
+wrap = True
+awrap = False
+leave = False
+white = False
+img = False
+ray = False
+com_rep = False
+flip = False
+view_file = -1
+seed = 10
+
+for option, value in options:
+  if option in ('-h', '--help'):
+    usage()
+    sys.exit()
+  elif option in ('-f', '--file'):
+    blockfiles = [value]
+  elif option in ('-c', '--chains'):
+    chains = int(value)
+  elif option in ('-p', '--pymol'):
+    pymol_load = 'no'
+  elif option in ('-s', '--scale'):
+    sf = float(value)
+    #rep = 'com_particle'
+    #com_rep = True
+  elif option in ('-L', '--box'):
+    L = float(value)
+  elif option in ('-u', '--unwrap'):
+    wrap = False
+  elif option in ('-a', '--awrap'):
+    awrap = True
+  elif option in ('-l', '--leave'):
+    leave = True
+  elif option in ('-w', '--white'):
+    white = True
+  elif option in ('--ray'):
+    ray = True
+  elif option in ('--flip'):
+    flip = True
+  elif option in ('-i', '--img'):
+    img = True
+  elif option in ('-v', '--view'):
+    view_file = value
+  elif option in ('-r', '--rep'):
+    com_rep = True
+    rep = 'com_particle'
+  elif option in ('--seed'):
+    seed = int(value)
+  else:
+    assert False, 'Command line error.'
+
+# track these chains only (make this empty to use zcm method)
+track = []
+
+# representation ('monomers' or 'com_particle')
+rep = 'monomers'
+if(com_rep): rep = 'com_particle'
+
+# seed the RNG
+random.seed(seed)
+
+# set view
+if(view_file != -1):
+  f = open(view_file)
+  data = f.readlines()
+  f.close()
+  v = ''
+  for d in data:
+    v = v + d
+
+files_to_delete = []
+
+# PDB format string
+pdb = '%6s%5d%5s%4s%6d%12.3f%8.3f%8.3f\n'
+
+# create empty PyMOL input file
+fname = 'M.pml'
+fpymol = open(fname, 'w')
+fpymol.close()
+
+# loop over block files
+for file in blockfiles:
+
+  fmanager = pypolymer.read_blockfile(file)
+  timestep = fmanager[0]
+  total_particles = fmanager[1]
+  M_rings = fmanager[2]; M_linear = fmanager[3]
+  monomers = fmanager[4]; monomers_half = fmanager[5]
+  x = fmanager[6]; y = fmanager[7]; z = fmanager[8]
+  Lx = fmanager[9]; Ly = fmanager[10]; Lz = fmanager[11]
+  particle = fmanager[12]
+
+  #M_rings = M_linear = 113
+
+  #vismol -f /data/thnas1_2/halvers/ppa_rg2_dist/N400M200M3/config.10000000 -s 3 -w
+  #x = np.array(x) + Lx/3.0
+  #x = x.tolist()
+  #y = np.array(y) - Ly/3.0
+  #y = y.tolist()
+
+  if(L < 0.0): L = Lx
+  rho = total_particles / L**3
+  rho_str = '%.4f' % rho
+
+  if(file == blockfiles[0]):
+    total_particles1st = total_particles
+    sys.stdout.write('System parameters:\n')
+    sys.stdout.write('  M_rings = ' + str(M_rings) + '\n')
+    sys.stdout.write('  M_linear = ' + str(M_linear) + '\n')
+    sys.stdout.write('  N = ' + str(monomers) + '\n')
+    sys.stdout.write('  N/2 = ' + str(monomers_half) + '\n')
+    sys.stdout.write('  rho = ' + rho_str + '\n\n')
+  if(total_particles1st != total_particles):
+    sys.stderr.write('Change in total_particles (' + str(total_particles) + ').\n')
+    sys.exit()
+
+  sys.stdout.write('Working on ' + file + '\n')
+
+  # initialize list to store chain index and center-of-mass position
+  com = []
+
+  if(chains == 0):
+    chains = M_rings + M_linear
+  show_chains = chains
+
+  # load flip data
+  if(flip):
+    iflgs = []
+    f = open('pymol.flip')
+    data = f.readlines()
+    f.close()
+    xfreq = int(data[0].split()[1])
+    yfreq = int(data[1].split()[1])
+    zfreq = int(data[2].split()[1])
+    if(len(data) != 3):
+      for i in range(chains):
+        xflg, xover, yflg, yover, zflg, zover = map(int, data[i + 3].split())
+        iflgs.append([xflg, xover, yflg, yover, zflg, zover])
+
+  # create list of colors
+  colors = []
+  for i in range(chains):
+    r = random.random()
+    g = random.random()
+    b = random.random()
+    colors.append('[%4.3f, %4.3f, %4.3f]' % (r, g, b))
+
+  # loop over chains to wrap coordinates
+  for i in range(chains):
+
+    # compute center-of-mass
+    xcm = 0.0; ycm = 0.0; zcm = 0.0
+    for j in range(monomers):
+      p = i * monomers + j
+      xcm = xcm + x[p]
+      ycm = ycm + y[p]
+      zcm = zcm + z[p]
+    xcm = xcm / monomers
+    ycm = ycm / monomers
+    zcm = zcm / monomers
+
+  #if(wrap and not awrap):
+    # shift chain such that the central box is between [0, L]
+    ix = int(xcm / L)
+    iy = int(ycm / L)
+    iz = int(zcm / L)
+ 
+    # correct in case of negative positions
+    if(xcm < 0.0): ix = ix - 1
+    if(ycm < 0.0): iy = iy - 1
+    if(zcm < 0.0): iz = iz - 1
+
+    # wrap center-of-mass position
+    xcm = xcm - ix * L
+    ycm = ycm - iy * L
+    zcm = zcm - iz * L
+
+    com.append((i, xcm, ycm, zcm))
+
+    if(wrap and not awrap):
+      # perform wrap
+      for j in range(monomers):
+        p = i * monomers + j
+        x[p] = x[p] - ix * L
+        y[p] = y[p] - iy * L
+        z[p] = z[p] - iz * L
+
+    if(flip):
+      xflg_new = 0
+      if(xcm < 0.1*L): xflg_new = -1
+      if(xcm > 0.9*L): xflg_new = 1
+      yflg_new = 0
+      if(ycm < 0.1*L): yflg_new = -1
+      if(ycm > 0.9*L): yflg_new = 1
+      zflg_new = 0
+      if(zcm < 0.1*L): zflg_new = -1
+      if(zcm > 0.9*L): zflg_new = 1
+
+      if(len(data) == 3):
+        iflgs.append([xflg_new, 0, yflg_new, 0, zflg_new, 0])
+      else:
+
+        if(iflgs[i][5] >= zfreq):
+          # accept the new flag above and reset counter
+          zflg_new = zflg_new
+          zover = 0
+        else:
+          if(iflgs[i][4] == 1 and zflg_new == -1 or iflgs[i][4] == -1 and zflg_new == 1):
+            # move chain back, increment counter and keep old flag value
+            for j in range(monomers):
+              p = i * monomers + j
+              z[p] = z[p] + iflgs[i][4] * L
+            zflg_new = iflgs[i][4]
+            zover = iflgs[i][5] + 1
+          else:
+            # old and/or new flag must be zero or equal so accept
+            zflg_new = zflg_new
+            zover = 0
+        iflgs[i][4] = zflg_new
+        iflgs[i][5] = zover
+
+        if(iflgs[i][3] >= yfreq):
+          # accept the new flag above and reset counter
+	  yflg_new = yflg_new
+          yover = 0
+        else:
+          if(iflgs[i][2] == 1 and yflg_new == -1 or iflgs[i][2] == -1 and yflg_new == 1):
+            # move chain back, increment counter and keep old flag value
+	    for j in range(monomers):
+	      p = i * monomers + j
+	      y[p] = y[p] + iflgs[i][2] * L
+	    yflg_new = iflgs[i][2]
+	    yover = iflgs[i][3] + 1
+          else:
+            # old and/or new flag must be zero or equal so accept
+	    yflg_new = yflg_new
+            yover = 0
+        iflgs[i][2] = yflg_new
+        iflgs[i][3] = yover
+
+        if(iflgs[i][1] >= xfreq):
+          # accept the new flag above and reset counter
+          xflg_new = xflg_new
+          xover = 0
+        else:
+	  if(iflgs[i][0] == 1 and xflg_new == -1 or iflgs[i][0] == -1 and xflg_new == 1):
+	    # move chain back, increment counter and keep old flag value
+	    for j in range(monomers):
+              p = i * monomers + j
+	      x[p] = x[p] + iflgs[i][0] * L
+	    xflg_new = iflgs[i][0]
+	    xover = iflgs[i][1] + 1
+          else:
+	    # old and/or new flag must be zero or equal so accept
+	    xflg_new = xflg_new
+            xover = 0
+        iflgs[i][0] = xflg_new
+        iflgs[i][1] = xover
+
+    if(awrap):
+      # perform atomic wrap
+      for j in range(monomers):
+        p = i * monomers + j
+        ix = int(x[p] / L)
+        iy = int(y[p] / L)
+        iz = int(z[p] / L)
+	if(x[p] < 0.0): ix = ix - 1
+	if(y[p] < 0.0): iy = iy - 1
+	if(z[p] < 0.0): iz = iz - 1
+	x[p] = x[p] - ix * L
+        y[p] = y[p] - iy * L
+        z[p] = z[p] - iz * L
+
+ 
+  ### FINISHED LOOP OVER CHAINS ###
+
+
+  # update flip file
+  if(flip):
+    f = open('pymol.flip', 'w')
+    f.write('%s %d\n' % ('x', xfreq))
+    f.write('%s %d\n' % ('y', yfreq))
+    f.write('%s %d\n' % ('z', zfreq))
+    for i in range(chains):
+      f.write('%d %d %d %d %d %d\n' % (iflgs[i][0], iflgs[i][1], iflgs[i][2], iflgs[i][3], iflgs[i][4], iflgs[i][5]))
+    f.close()
+
+  # arrange com by zcm or track
+  if(len(track) != 0):
+    show_chains = len(track)
+    track.sort()
+    for i in range(len(track)):
+      com[i] = com[track[i]]
+    com = com[0:show_chains]
+  else:
+    # reverse sort the list and create sublist
+    #com.sort(lambda u, v: cmp(u[2], v[2]), reverse = True)
+    com = com[0:show_chains]
+
+  # loop over chains and write a file for each
+  for k in range(show_chains):
+    # fname = 'M' + str(monomers) + 'T' + str(timestep) + 'C' + str(k) + '.pdb'
+    fname = 'M' + str(monomers) + 'C' + str(k) + '.pdb'
+    files_to_delete.append(fname)
+    outfile = open(fname, 'w')
+    i = com[k][0]
+    if(rep == 'monomers'):
+      for j in range(monomers):
+        p = i * monomers + j
+        outfile.write(pdb % ('HETATM', j, 'C', 'ATM', i, sf * x[p], sf * y[p], sf * z[p]))
+    else:
+      # write center-of-mass particle for each chain 
+      xcm = com[k][1]
+      ycm = com[k][2]
+      zcm = com[k][3]
+      outfile.write(pdb % ('HETATM', 1, 'C', 'ATM', i, sf * xcm, sf * ycm, sf * zcm))
+    outfile.close()
+    if(k==0 or k==1 or k==show_chains-2 or k==show_chains-1):
+      sys.stdout.write('Wrote file ' + fname + '\n')
+  if(particle):
+    ix = int(x[-1] / L)
+    iy = int(y[-1] / L)
+    iz = int(z[-1] / L)
+    if(x[-1] < 0.0): ix = ix - 1
+    if(y[-1] < 0.0): iy = iy - 1
+    if(z[-1] < 0.0): iz = iz - 1
+    xcm = x[-1] - ix * L
+    ycm = y[-1] - iy * L
+    zcm = z[-1] - iz * L
+    fname = 'M' + str(monomers) + 'P.pdb'
+    files_to_delete.append(fname)
+    outfile = open(fname, 'w')
+    outfile.write(pdb % ('HETATM', 1, 'C', 'ATM', 1, sf * xcm, sf * ycm, sf * zcm))
+    outfile.close()
+ 
+  # write PyMOL input file
+  fname = 'M.pml'
+  files_to_delete.append(fname)
+  fpymol = open(fname, 'a')
+  fpymol.write('reinitialize\n')
+  fpymol.write('viewport 640,480\n')
+  for k in range(show_chains):
+    # flnm = 'M' + str(monomers) + 'T' + str(timestep) + 'C' + str(k) + '.pdb'
+    flnm = 'M' + str(monomers) + 'C' + str(k) + '.pdb'
+    fpymol.write('load ' + flnm + '\n')
+    if(white and k >= M_rings):
+      #fpymol.write('color white, ' + flnm[0:len(flnm) - 4] + '\n')
+      fpymol.write('color gray, ' + flnm[0:len(flnm) - 4] + '\n')
+    else:
+      fpymol.write('set_color color' + str(k) + ', ' + colors[com[k][0]] + '\n')
+      fpymol.write('color color' + str(k) + ', ' + flnm[0:len(flnm) - 4] + '\n')
+    fpymol.write('show spheres, ' + flnm[0:len(flnm) - 4] + '\n')
+  if(rep == 'com_particle'):
+    fpymol.write('alter elem C, vdw=%.1f\n' % (monomers / 30))
+    fpymol.write('rebuild\n')
+  # write particle
+  if(particle):
+    flnm = 'M' + str(monomers) + 'P.pdb'
+    fpymol.write('load ' + flnm + '\n')
+    fpymol.write('set_color colorP, [1.000, 1.000, 1.000]\n')
+    fpymol.write('color colorP, ' + flnm[0:len(flnm) - 4] + '\n')
+    fpymol.write('show spheres, ' + flnm[0:len(flnm) - 4] + '\n')
+  # write box
+  fpymol.write('load box.pdb\n')
+  fpymol.write('color white, box\n')
+  fpymol.write('show sticks, box\n')
+
+  fpymol.write('reset\n')
+  if(view_file != -1): fpymol.write(v)
+  if(img):
+    if(ray): fpymol.write('ray\n')
+    fpymol.write('png N' + str(monomers) + 'T' + str(timestep) + '.png\n')
+    fpymol.write('quit\n')
+  fpymol.close()
+
+sys.stdout.write('Wrote out PyMOL file ' + fname + '\n')
+
+# write out box file
+scaled_L = sf * L
+fbox = open('box.pdb', 'w')
+files_to_delete.append('box.pdb')
+fbox.write(pdb % ('HETATM', 1, 'C', 'ATM', 1, 0.0, 0.0, 0.0))
+fbox.write(pdb % ('HETATM', 2, 'C', 'ATM', 2, 0.0, 0.0, scaled_L))
+fbox.write(pdb % ('HETATM', 3, 'C', 'ATM', 3, scaled_L, scaled_L, 0.0))
+fbox.write(pdb % ('HETATM', 4, 'C', 'ATM', 4, scaled_L, scaled_L, scaled_L))
+fbox.write(pdb % ('HETATM', 5, 'C', 'ATM', 5, 0.0, scaled_L, 0.0))
+fbox.write(pdb % ('HETATM', 6, 'C', 'ATM', 6, 0.0, scaled_L, scaled_L)) 
+fbox.write(pdb % ('HETATM', 7, 'C', 'ATM', 7, scaled_L, 0.0, 0.0))
+fbox.write(pdb % ('HETATM', 8, 'C', 'ATM', 8, scaled_L, 0.0, scaled_L))
+fbox.write('%6s%5d%5d\n' % ('CONECT', 1, 2))
+fbox.write('%6s%5d%5d\n' % ('CONECT', 3, 4))
+fbox.write('%6s%5d%5d\n' % ('CONECT', 1, 5))
+fbox.write('%6s%5d%5d\n' % ('CONECT', 1, 7))
+fbox.write('%6s%5d%5d\n' % ('CONECT', 2, 6))
+fbox.write('%6s%5d%5d\n' % ('CONECT', 2, 8))
+fbox.write('%6s%5d%5d\n' % ('CONECT', 3, 5))
+fbox.write('%6s%5d%5d\n' % ('CONECT', 4, 6))
+fbox.write('%6s%5d%5d\n' % ('CONECT', 4, 8))
+fbox.write('%6s%5d%5d\n' % ('CONECT', 5, 6))
+fbox.write('%6s%5d%5d\n' % ('CONECT', 7, 8))
+fbox.write('%6s%5d%5d\n' % ('CONECT', 3, 7))
+fbox.close()
+sys.stdout.write('box.pdb written to disk.' + '\n\n')
+
+# view chains in PyMOL
+if(len(blockfiles) == 1 and pymol_load == 'yes'):
+  cmd = 'env /sw/linux/suse/client/pymol/pymol ' + fname
+  os.system(cmd)
+  if(not leave):
+    for file in files_to_delete:
+      os.remove(file)

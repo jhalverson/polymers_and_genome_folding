@@ -1,0 +1,291 @@
+#!/usr/bin/env python
+
+"""This Python script uses Matplotlib to create plots showing
+   when each job ran, the number of integration steps and the loop
+   time. It requires the log files only.
+
+   TODO: write a class which is a log file with endstep, steps, date,
+   looptime and jobstep. Don't use grep, write your own.
+"""
+
+import sys
+import os
+import time
+import glob
+import getopt
+import datetime
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from matplotlib.ticker import MultipleLocator
+from matplotlib.ticker import FormatStrFormatter
+
+def usage():
+  print 'step_loop:'
+  print '  -f           Location of figure.common'
+  print '  -w           Wall clock limit'
+  print '  -h, --help   Help menu'
+  print ''
+  print '               Defaults: -f ../scripts/figure.common -w 24'
+  print ''
+  print '               Examples: step_loop -f figure.common'
+  print '                         step_loop -f ../sim/figure.common -w 12'
+  print ''
+  print '  figure.common should specify job_name, y_title, title and dpi_png'
+
+try:
+  options, args = getopt.getopt(sys.argv[1:], 'hf:w:', ['help'])
+except getopt.GetoptError, err:
+  print str(err)
+  usage()
+  sys.exit(2)
+
+# defaults
+wall_limit = 24
+figure_dot_common = '../scripts/figure.common'
+step_exp10 = 6
+
+for option, value in options:
+  if option in ('-h', '--help'):
+    usage()
+    sys.exit()
+  elif option in ('-f'):
+    figure_dot_common = value
+  elif option in ('-w'):
+    wall_limit = int(value)
+  else:
+    assert False, 'Command line error.'
+
+job_name = 'JOB_NAME'
+y_title = 0.85
+title =''
+dpi_png = 200
+
+execfile(figure_dot_common)
+
+####################################################
+##### PART I: EXTRACT DATA FROM LOG FILES      #####
+####################################################
+
+# Sample contents of log.tmp:
+# --
+# log.0-30000000   0.99747611    5.0122182    21.942375
+# log.0:Loop time of 30736.1 on 512 procs for 30000000 steps with 45200 atoms
+# --
+# log.1-60000000    1.0008339    4.9617328    21.932816
+# log.1:Loop time of 30865.6 on 512 procs for 30000000 steps with 45200 atoms
+
+if(glob.glob('log.*') == []):
+  sys.stdout.write(sys.argv[0] + ': No log files found. Exiting ...\n')
+  sys.exit(1)
+os.system('grep -H -B 1 "Loop time" log.* > log.tmp')
+if(os.path.getsize('log.tmp') == 0):
+  os.system('rm -f log.tmp')
+  sys.stdout.write(sys.argv[0] + ': log.tmp is empty. Exiting ...\n')
+  sys.exit(1)
+f = open('log.tmp')
+data = f.readlines()
+f.close()
+os.system('rm -f log.tmp')
+
+s_per_day = 3600 * 24
+trouble = ''
+jobstep_looptime_steps = []
+jobstep_endstep = []
+for d in data:
+  if('log.' in d):
+    if('Loop time' in d):
+      a = d.split()[0]
+      jobstep = int(a[a.index('.') + 1: a.index(':')])
+      loop_time = float(d.split()[3]) / s_per_day
+      # get steps
+      sts = d.split()[8]
+      if(sts.isdigit()):
+        steps = float(sts) / 10**step_exp10
+      else:
+        steps = 0.0
+        sys.stdout.write('WARNING: Steps not a number (' + sts + ')\n')
+        trouble += sys.argv[0] + ': WARNING: Steps not a number (' + sts + ')\n'
+      jobstep_looptime_steps.append([jobstep, loop_time, steps])
+    else:
+      a = d.split('-')[0]
+      b = d.split('-')[1].split()[0]
+      jobstep = int(a[a.index('.') + 1:])
+      endstep = float(b) / 10**step_exp10
+      jobstep_endstep.append([jobstep, endstep])
+
+# combine entries in case of multiple run commands
+max_jobstep = max([u[0] for u in jobstep_looptime_steps])
+for jobstep in range(max_jobstep + 1):
+  degenerate_indices = []
+  for i, item in enumerate(jobstep_looptime_steps):
+    if(item[0] == jobstep): degenerate_indices.append(i)
+  if(len(degenerate_indices) > 1):
+    for i in degenerate_indices[1:]:
+      jobstep_looptime_steps[degenerate_indices[0]][1] += jobstep_looptime_steps[i][1]
+      jobstep_looptime_steps[degenerate_indices[0]][2] += jobstep_looptime_steps[i][2]
+      jobstep_endstep[degenerate_indices[0]][1] += jobstep_endstep[i][1]
+    for i in degenerate_indices[1:]:
+      jobstep_looptime_steps.pop(i)
+      jobstep_endstep.pop(i)
+
+# The date associated with log.* is assumed to be when the job finished. The
+# starting date is obtained by subtracting the loop time. A log file of zero
+# size means the job is running; its date is when the job started. Matplotlib
+# wants dates to be converted to days since the epoch (using date2num).
+
+# Sample contents of listing.tmp:
+# -rw-rw-r-- 1 halvers theorie 1473196 2011-01-12 02:33 log.0
+# -rw-rw-r-- 1 halvers theorie 1473043 2011-01-12 11:12 log.1
+# -rw-rw-r-- 1 halvers theorie 1473045 2011-01-12 19:48 log.2
+# -rw-rw-r-- 1 halvers theorie 1493042 2011-01-13 04:24 log.3
+# -rw-rw-r-- 1 halvers theorie 1503040 2011-01-13 12:59 log.4
+# -rw-rw-r-- 1 halvers theorie       0 2011-01-13 13:00 log.5
+# or
+# -rw-rw-r-- 1 halvers theorie 1473187 Jan 12 02:36 log.0
+
+os.system('ls -l log.* > listing.tmp')
+f = open('listing.tmp')
+data = f.readlines()
+f.close()
+os.system('rm -f listing.tmp')
+
+jobstep_date = []
+for d in data:
+  if('log.' in d):
+    a = d.split()[-1]
+    b = a[a.index('.') + 1:]
+    if(b.isdigit()):
+      jobstep = int(b)
+      if(len(d.split()) == 8):
+        year_month_day, hr_min = d.split()[5:7]
+        s = year_month_day + '-' + hr_min
+        date_log = datetime.datetime.strptime(s, '%Y-%m-%d-%H:%M')
+      elif(len(d.split()) == 9):
+        month, day, hr_min = d.split()[5:8]
+        s = month + '-' + day + '-' + hr_min
+        date_log = datetime.datetime.strptime(s, '%b-%d-%H:%M')
+      else:
+        sys.stdout.write(sys.argv[0] + ': ERROR: Wrong number of fields in ls.\n')
+        trouble += sys.argv[0] + ': ERROR: Wrong number of fields in ls.\n'
+        sys.exit(1)
+      jobstep_date.append([jobstep, mdates.date2num(date_log)])
+
+# The job steps in jobstep_looptime_steps or jobstep_endstep are of
+# completed jobs while there may be at most one in jobstep_size_date
+# that has not yet completed. Note that dates and looptime are stored
+# in days.
+
+if(trouble):
+  cmd = 'echo "' + trouble + '" | mail -s "problem with ' + job_name + '" halverson@mpip-mainz.mpg.de'
+  os.system(cmd)
+
+# determine number of days spanned by simulation
+days = [u[1] for u in jobstep_date]
+days = int(max(days) - min(days))
+
+# sort lists by jobstep
+jobstep_looptime_steps.sort(lambda u, v: cmp(u[0], v[0]))
+jobstep_endstep.sort(lambda u, v: cmp(u[0], v[0]))
+jobstep_date.sort(lambda u, v: cmp(u[0], v[0]))
+
+
+####################################################
+##### PART II: CREATE FIGURES USING MATPLOTLIB #####
+####################################################
+
+plt.rcParams['text.usetex'] = True
+plt.rcParams['axes.linewidth'] = 0.5
+plt.rcParams['axes.titlesize'] = 7
+plt.rcParams['axes.labelsize'] = 10
+plt.rcParams['xtick.labelsize'] = 8
+plt.rcParams['ytick.labelsize'] = 8
+plt.rcParams['font.size'] = 8
+plt.rcParams['legend.numpoints'] = 1
+plt.rcParams['legend.fontsize'] = 6
+plt.rcParams['legend.borderaxespad'] = 1
+plt.rcParams['lines.linewidth'] = 0.5
+plt.rcParams['lines.markersize'] = 3
+
+clr = ['k', 'r', 'g', 'b', 'm', 'c', 'y']
+
+w = 8.0 / 2.54
+h = (3.0 / 4.0) * w
+
+# create step-date figure
+fig = plt.figure(1, figsize=(w, h))
+ax1 = fig.add_subplot(1, 1, 1)
+
+c = 0
+for i in range(len(jobstep_looptime_steps)):
+  end_date = jobstep_date[i][1]
+  start_date = end_date - jobstep_looptime_steps[i][1]
+  end_step = jobstep_endstep[i][1]
+  start_step = end_step - jobstep_looptime_steps[i][2]
+  # print jobstep_looptime_steps[i][2]/jobstep_looptime_steps[i][1], mdates.num2date(end_date) # for RZG
+  plt.plot([start_date, end_date], [start_step, end_step], clr[c] + '-')
+  if(len(jobstep_looptime_steps) < 30): plt.plot([start_date], [start_step], clr[c] + 'o', mec=clr[c])
+  xave = 0.5 * (end_date + start_date)
+  yave = 0.5 * (end_step + start_step)
+  if(i % (len(jobstep_looptime_steps) / 16 + 1) == 0):
+    plt.text(xave, yave + 10, r'$' + str(jobstep_looptime_steps[i][0]) + r'$', fontsize=6, ha='right', va='center')
+  c = c + 1
+  if(c == len(clr)): c = 0
+if(len(jobstep_looptime_steps) != len(jobstep_date)):
+  start_date = jobstep_date[-1][1]
+  if(len(jobstep_endstep) > 0):
+    start_step = jobstep_endstep[-1][1]
+  else:
+    start_step = 0
+  plt.plot([start_date], [start_step], clr[c] + 'o', mec=clr[c])
+
+plt.ylabel(r'$\mathrm{step}/10^' + str(step_exp10) + r'$')
+ax1.xaxis.set_major_locator(mdates.DayLocator(interval=days / 4 + 1))
+ax1.xaxis.set_minor_locator(mdates.DayLocator(interval=1))
+ax1.xaxis.set_major_formatter(mdates.DateFormatter('$\mathrm{%b~%d}$'))
+plt.figtext(0.5, y_title, title, fontsize=8, ha='center')
+plt.figtext(0.02, 0.95, os.getcwd().replace('_', '\_'), fontsize=4, color='0.75')
+plt.figtext(0.02, 0.93, time.asctime(), fontsize=4, color='0.75')
+
+fig.subplots_adjust(left=0.25, right=0.92, bottom=0.17, top=0.75, wspace=0.0, hspace=0.0)
+
+if 1:
+  for ax in fig.axes:
+    plt.setp(ax.patch, color=(0.9, 0.9, 0.9))
+
+outfile = job_name + '_step'
+plt.savefig(outfile + '.png', dpi=dpi_png)
+
+# create loop time figure
+fig = plt.figure(2, figsize=(w, h))
+ax2 = fig.add_subplot(1, 1, 1)
+
+hours_per_day = 24.0
+c = 0
+for job in jobstep_looptime_steps:
+  plt.bar(job[0], job[1] * hours_per_day, width=0.8, color=clr[c], linewidth=0.5, align='center')
+  c = c + 1 if c < len(clr) - 1 else 0
+if(len(jobstep_looptime_steps) != len(jobstep_date)):
+  plt.bar(jobstep_date[-1][0], 0.0, width=0.8, color=clr[c], linewidth=0.5, align='center')
+
+plt.plot([jobstep_date[0][0], jobstep_date[-1][0]], [wall_limit, wall_limit], 'k:')
+plt.ylim(0, 30)
+plt.xlabel(r'$\mathrm{job~step}$')
+plt.ylabel(r'$\mathrm{time~(hrs)}$')
+plt.xlim(jobstep_date[0][0] - 0.5, jobstep_date[-1][0] + 0.5)
+ax2.xaxis.set_major_locator(MultipleLocator(len(jobstep_date) / 12 + 1))
+ax2.xaxis.set_minor_locator(MultipleLocator(1))
+ax2.xaxis.set_major_formatter(FormatStrFormatter('$%d$'))
+plt.figtext(0.5, y_title, title, fontsize=8, ha='center')
+plt.figtext(0.02, 0.95, os.getcwd().replace('_', '\_'), fontsize=4, color='0.75')
+plt.figtext(0.02, 0.93, time.asctime(), fontsize=4, color='0.75')
+
+fig.subplots_adjust(left=0.25, right=0.92, bottom=0.17, top=0.75, wspace=0.0, hspace=0.0)
+
+if 1:
+  for ax in fig.axes:
+    plt.setp(ax.patch, color=(0.9, 0.9, 0.9))
+
+outfile = job_name + '_loop'
+plt.savefig(outfile + '.png', dpi=dpi_png)

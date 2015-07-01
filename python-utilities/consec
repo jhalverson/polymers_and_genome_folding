@@ -1,0 +1,143 @@
+#!/usr/bin/env python
+
+"""This Python script checks for consecutive files and can get
+   missing files from a specified machine."""
+
+import sys
+import os
+import time
+import getopt
+import glob
+
+def usage():
+  print 'consec:'
+  print '  -p, --prefix         Prefix for file names'
+  print '  -b, --begin          Starting time step'
+  print '  -e, --end            Ending time step'
+  print '  -s, --spacing        Number of steps between files'
+  print '  -m, --machine        Where to find missing files (jhalvers@vip: + machine_path)'
+  print '  -a, --accel          Flag to use accelerated checking method which may not work for non-uniform file names'
+  print '  -h, --help           Help menu'
+  print ''
+  print '                       Defaults: -s 100000'
+  print '                       Example: consec' # it will auto-detect everything except machine
+  print '                       Example: consec -p rings400_6 -b 0 -e 2100000000 -m /ptmp/jhalvers/100_100/'
+
+try:
+  options, args = getopt.getopt(sys.argv[1:], 'hp:b:e:s:m:a', \
+                  ['help', 'prefix=', 'begin=', 'end=', 'spacing=', 'machine=', 'accel'])
+
+except getopt.GetoptError, err:
+  print str(err)
+  usage()                                                                                                                      
+  sys.exit(2)                                                                                                                  
+
+# defaults
+prefix = ''
+begin = -1
+end = -1
+spacing = 100000
+machine_path = ''
+accel = False
+
+for option, value in options:
+  if option in ('-h', '--help'):
+    usage()
+    sys.exit()
+  elif option in ('-p', '--prefix'):
+    prefix = value
+  elif option in ('-b', '--begin'):
+    begin = int(value)
+  elif option in ('-e', '--end'):
+    end = int(value)
+  elif option in ('-s', '--spacing'):
+    spacing = int(value)
+  elif option in ('-m', '--machine'):
+    machine_path = value
+  elif option in ('-a', '--accel'):
+    accel = True
+  else:
+    assert False, 'Command line error.'
+
+if(prefix == ''):
+  # try to determine prefix
+  files = filter(lambda u: u.count('.') > 0, glob.glob('*'))
+  files = filter(lambda u: u[u.rindex('.') + 1:].isdigit(), files)
+  cnt = len(files)
+  if(cnt > 10):
+    mid_file = files[cnt / 2]
+    prefix = mid_file[:mid_file.rindex('.')]
+  else:
+    print 'Prefix not specified. Exiting ...'
+    sys.exit(1)
+
+if(begin != -1 and end != -1):
+  if(begin > end):
+    print 'Input parameter begin is larger than end. Exiting ...'
+    sys.exit(1)
+
+prefix = prefix + '.'
+files = glob.glob(prefix + '*')
+files = filter(lambda u: u[u.rindex('.') + 1:].isdigit(), files)
+files.sort(lambda u, v: cmp(int(u[u.rindex('.') + 1:]), int(v[v.rindex('.') + 1:])))
+
+if(begin == -1):
+  begin = int(files[0][files[0].rindex('.') + 1:])
+  second = int(files[1][files[1].rindex('.') + 1:])
+  spacing_begin = second - begin
+  if(spacing != spacing_begin):
+    print 'ERROR: spacing inconsistent: (spacing) (spacing_begin)', spacing, spacing_begin
+    print 'file spill', files[:2]
+    sys.exit(1)
+
+if(end == -1):
+  end = int(files[-1][files[-1].rindex('.') + 1:])
+  end_second = int(files[-2][files[-2].rindex('.') + 1:])
+  spacing_end = end - end_second
+  if(spacing != spacing_end):
+    print 'ERROR: spacing inconsistent: (spacing) (spacing_end)', spacing, spacing_end
+    print 'file spill', files[-2:]
+    sys.exit(1)
+
+if(machine_path != ''):
+  if(machine_path[-1] != '/'):
+    machine_path += '/'
+  print 'machine_path', machine_path
+
+print ''
+print 'prefix =', prefix[:-1]
+print 'begin =', begin
+print 'end =', end
+print 'spacing =', spacing
+print 'number of files =', len(files)
+print ''
+
+missing = 0
+found = 0
+if(accel):
+  for e, i in enumerate(range(begin, end + spacing, spacing)):
+    f = prefix + str(i)
+    if(f != files[e]):
+      print 'missing ', f
+      missing = missing + 1
+      if(machine_path != ''):
+	cmd = 'scp jhalvers@vip.rzg.mpg.de:' + machine_path + f + ' .\n'
+	os.system(cmd)
+	print cmd
+	found = found + 1
+else:
+  for i in range(begin, end + spacing, spacing):
+    f = prefix + str(i)
+    if(f not in files):
+      print 'missing ', f
+      missing = missing + 1
+      if(machine_path != ''):
+	cmd = 'scp jhalvers@vip.rzg.mpg.de:' + machine_path + f + ' .\n'
+	os.system(cmd)
+	print cmd
+	found = found + 1
+if(missing == 0):
+  print 'Files found to be consistent.'
+else:
+  print 'Number of missing files is', missing
+  if(machine_path != ''): print 'Number of (attempted) recovered files is', found

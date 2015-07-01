@@ -1,0 +1,66 @@
+#!/usr/bin/env python
+
+"""This Python script scales a PDF figure by some factor."""
+"""Could probably be replaced by convert"""
+
+import sys
+import os
+import time
+import getopt
+import glob
+
+def usage():
+  print 'bigger:'
+  print '  -f, --fin        Input file name'
+  print '  -s, --scale      Scale factor'
+  print '  -h, --help       Help menu'
+  print '                   Defaults: -f *.pdf -s 1.25'
+  print '                   Example: -f eta.pdf -s 1.5'
+
+try:
+  options, args = getopt.getopt(sys.argv[1:], 'hf:s:', ['help', 'fin=', 'scale='])
+except getopt.GetoptError, err:
+  # print help information and exit:
+  print str(err) # will print something like "option -a not recognized"
+  usage()
+  sys.exit(2)
+
+# defaults
+fin = glob.glob('*.pdf')
+if(len(fin) > 0): fin = fin[0]
+scale = 1.25
+
+for option, value in options:
+  if option in ('-h', '--help'):
+    usage()                     
+    sys.exit()                  
+  elif option in ('-f', '--fin'):
+    fin = value                  
+  elif option in ('-s', '--scale'):
+    scale = float(value)       
+  else:
+    assert False, 'Command line error.'
+
+if(len(fin) < 2):
+  print 'ERROR: file not found or specified.'
+  sys.exit(1)
+
+base = fin[:fin.rindex('.')]
+
+# create tex file
+f = open('bigger.tex', 'w')
+f.write('\documentclass[]{article}\n')
+f.write('\usepackage{graphicx}\n')
+f.write('\usepackage{lscape}\n')
+f.write('\\begin{document}\n')
+f.write('\\thispagestyle{empty}\n')
+f.write('\\begin{landscape}\n')
+f.write('\\begin{center}\n')
+f.write('\includegraphics[scale=' + str(scale) + ']{' + fin + '}\n')
+f.write('\end{center}\n')
+f.write('\end{landscape}\n')
+f.write('\end{document}\n')
+f.close()
+
+os.system('pdflatex bigger\n')
+os.system('rm -f bigger.tex bigger.aux bigger.log\n')

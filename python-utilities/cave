@@ -1,0 +1,106 @@
+#!/usr/bin/env python
+
+"""This Python script operates on columns of data. The variables c, begin
+   and end range from 1 to N where N is the total number of rows."""
+
+import sys
+import os
+import glob
+import time
+import numpy as np
+import getopt
+
+def usage():
+  print 'acf:'
+  print '  -f, --fin       Input file name'
+  print '  -c, --column    Column to analyze (1, 2, ...)'
+  print '  -a, --average   Flag to perform average'
+  print '  -s, --std       Flag to report standard deviation'
+  print '  -l, --length    Flag to print out length of column'
+  print '  -b, --begin     Line number to begin'
+  print '  -e, --end       Line number to end'
+  print '  -n, --numbers   Flag to remove rows that do not contain all numbers'
+  print '  -p, --print     Print data with line numbers'
+  print '  -h, --help      Help menu'
+  print '                  Defaults: -f *.dat -c 1 -a -s'
+  print '                  Example: tcsh% column -f rho.dat -c 2 -b 101 -e 200'
+
+try:
+  options, args = getopt.getopt(sys.argv[1:], \
+                               'hf:c:aslb:e:pn', \
+                              ['help', 'fin=', 'column=', 'average', 'std', \
+                               'length', 'begin=', 'end=', 'print', 'numbers'])
+
+except getopt.GetoptError, err:
+  print str(err)
+  usage()
+  sys.exit(2)
+
+# defaults
+fin_default = glob.glob('*.dat')
+fin = ''
+c = 1
+average = True
+std = True
+length = True
+begin = 1
+end = None
+output = False
+numbers = False
+
+for option, value in options:
+  if option in ('-h', '--help'):
+    usage()
+    sys.exit()
+  elif option in ('-f', '--fin'):
+    fin = value
+  elif option in ('-c', '--column'):
+    c = int(value)
+  elif option in ('-a', '--average'):
+    average = True
+  elif option in ('-s', '--std'):
+    std = True
+  elif option in ('-l', '--length'):
+    length = True
+  elif option in ('-b', '--begin'):
+    begin = int(value)
+  elif option in ('-e', '--end'):
+    end = int(value)
+  elif option in ('-p', '--print'):
+    output = True
+  elif option in ('-n', '--numbers'):
+    numbers = True
+  else:
+    assert False, 'Command line error.'
+
+# data file
+if(fin == '' and len(fin_default) == 1):
+  fin = fin_default[0]
+elif(fin == '' and len(fin_default) == 0):
+  print 'Input file not specified. Exiting ...'
+  sys.exit(1)
+
+# read and store file contents
+f = open(fin)
+data = f.readlines()
+f.close()
+if(numbers):
+  data = filter(lambda u: u.expandtabs().strip().replace(' ', '').replace('.', '').replace('-', '').isdigit(), data)
+
+if(output):
+  for line, d in enumerate(data):
+    sys.stdout.write('%6d: %s\n' % (line + 1, d.strip()))
+  sys.stdout.write('\n')
+
+if(end == None): end = len(data)
+sys.stdout.write('%6d %s\n' % (begin, data[begin - 1].strip()))
+sys.stdout.write('%6d %s\n' % (end, data[end - 1].strip()))
+
+x = []
+for i in range(begin - 1, end):
+  x.append(float(data[i].split()[c - 1]))
+x = np.array(x)
+
+print 'total lines =', x.size
+print 'ave =', np.mean(x)
+print 'std =', np.std(x)

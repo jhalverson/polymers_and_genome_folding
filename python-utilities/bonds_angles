@@ -1,0 +1,149 @@
+#!/usr/bin/env python
+
+"""This Python script creates the bonds and angles section
+   of a LAMMPS input file."""
+
+import sys
+import getopt
+import glob
+
+def usage():
+  print 'bonds_angles:'
+  print '  -f, --fout           Prefix of output file name'
+  print '  -r, --rings          Number of rings'
+  print '  -l, --linear         Number of linear'
+  print '  -m, --monomers       Monomers per chain'
+  print '  -t, --types          Number of atom types'
+  print '  -L, --box            Box length (sigma)'
+  print '  -A, --atoms          File with data for Atoms section'
+  print '  -b, --box-triclinic  Flag to make the box triclinic (with zero tilt factors)'
+  print '  -h, --help           Help menu'
+  print '                       Defaults: -f lammps -r 0 -l 0 -t 1 -L 0.0000'
+  print '                       Example: tcsh% bonds_angles -f rings200_6 -r 200 -l 6 -m 400 -L 36.1033 -A coords.out'
+
+try:
+  options, args = getopt.getopt(sys.argv[1:], 'hf:r:l:m:t:L:A:b', \
+                  ['help', 'fout=', 'rings=', 'linear=', \
+                   'monomers=', 'types=', 'L=', 'atoms=', 'box-triclinic'])
+except getopt.GetoptError, err:
+  print str(err)
+  usage()
+  sys.exit(2)
+
+# defaults
+base = 'lammps'
+rings = 0
+linear = 0
+monomers = 0
+types = 1
+L = 0.0
+atoms = ''
+triclinic = False
+
+for option, value in options:
+  if option in ('-h', '--help'):
+    usage()
+    sys.exit()
+  elif option in ('-f', '--fout'):
+    base = value
+  elif option in ('-r', '--rings'):
+    rings = int(value)
+  elif option in ('-l', '--linear'):
+    linear = int(value)
+  elif option in ('-m', '--monomers'):
+    monomers = int(value)
+  elif option in ('-t', '--types'):
+    types = int(value)
+  elif option in ('-L', '--box'):
+    L = float(value)
+  elif option in ('-A', '--atoms'):
+    atoms = value
+  elif option in ('-b', '--box-triclinic'):
+    triclinic = True
+  else:
+    assert False, 'Command line error.'
+
+num_atoms =  rings * monomers + linear * monomers
+num_bonds =  rings * monomers + linear * (monomers - 1)
+num_angles = rings * monomers + linear * (monomers - 2)
+
+f = open(base + '.start', 'w')
+f.write('LAMMPS\n')
+f.write('\n')
+f.write('%d atoms\n' % num_atoms)
+f.write('%d bonds\n' % num_bonds)
+f.write('%d angles\n' % num_angles)
+f.write('0 dihedrals\n')
+f.write('0 impropers\n')
+f.write('\n')
+f.write('%d atom types\n' % types)
+f.write('1 bond types\n')
+f.write('1 angle types\n')
+f.write('0 dihedral types\n')
+f.write('0 improper types\n')
+f.write('\n')
+if(triclinic): f.write('0.0 0.0 0.0 xy xz yz\n')
+f.write('0.0000 %.4f xlo xhi\n' % L)
+f.write('0.0000 %.4f ylo yhi\n' % L)
+f.write('0.0000 %.4f zlo zhi\n' % L)
+f.write('\n')
+f.write('Atoms\n')
+f.write('\n')
+
+if(atoms != ''):
+  g = open(atoms)
+  data = g.readlines()
+  g.close()
+  f.writelines(data)
+  f.write('\n')
+
+f.write('Bonds\n')
+f.write('\n')
+
+# create a list of bonds
+bonds = []
+for i in range(rings):
+  for j in range(monomers - 1):
+    id1 = i * monomers + j
+    id2 = id1 + 1
+    bonds.append((id1, id2))
+  bonds.append((i * monomers + monomers - 1, i * monomers))
+for i in range(linear):
+  for j in range(monomers - 1):
+    id1 = rings * monomers + i * monomers + j
+    id2 = id1 + 1
+    bonds.append((id1, id2))
+
+for i, b in enumerate(bonds):
+  f.write('%d %d %d %d\n' % (i + 1, 1, b[0] + 1, b[1] + 1))
+
+f.write('\n')
+f.write('Angles\n')
+f.write('\n')
+
+# create a list of angles
+angles = []
+for i in range(rings):
+  for j in range(monomers - 2):
+    id1 = i * monomers + j
+    id2 = id1 + 1
+    id3 = id1 + 2
+    angles.append((id1, id2, id3))
+  id1 = i * monomers + monomers - 2
+  id2 = i * monomers + monomers - 1
+  id3 = i * monomers
+  angles.append((id1, id2, id3))
+  id1 = i * monomers + monomers - 1
+  id2 = i * monomers
+  id3 = i * monomers + 1
+  angles.append((id1, id2, id3))
+for i in range(linear):
+  for j in range(monomers - 2):
+    id1 = rings * monomers + i * monomers + j
+    id2 = id1 + 1
+    id3 = id1 + 2
+    angles.append((id1, id2, id3))
+
+for i, a in enumerate(angles):
+  f.write('%d %d %d %d %d\n' % (i + 1, 1, a[0] + 1, a[1] + 1, a[2] + 1))
+f.close()

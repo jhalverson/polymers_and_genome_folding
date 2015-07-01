@@ -1,0 +1,775 @@
+#!/usr/bin/env python
+
+"""This script computes Rg squared and Re squared for a system
+   of rings and/or linear chains. The average values and
+   standard deviations are reported. Coordinates are assumed
+   to be unwrapped. NumPy could be used to compute stanard
+   deviations in a more compact manner but it introduces a
+   dependency. For unknown reasons standard deviations are
+   computed on averages of files instead of individual chains."""
+
+import sys
+import os
+import time
+import math
+import glob
+import getopt
+import numpy
+import pypolymer
+
+def usage():
+  print 'rg2:'
+  print '  -p, --prefix   Prefix of files'
+  print '  -m             Maximum number of files for globbing or log scale'
+  print '  -b             Beginning time step or starting exponent'
+  print '  -e             Ending time step or ending exponent'
+  print '  -s             Spacing of time step for simple loop'
+  print '  -x, --xyz      Flag to report x, y and z components of Rg2'
+  print '  -r, --ratios   Flag to report eigenvalue ratios of the gyration tensor'
+  print '      --Mrings   Override the dictionary value of the number of rings'
+  print '      --Mlinear  Override the dictionary value of the number of linear'
+  print '  -c, --case     Case (e.g., a, b, c)'
+  print '      --pos      Flag to use the pos file format (simple loop only)'
+  print '  -h, --help     Help menu'
+  print ''
+  print '  Examples:'
+  print '    rg2 -p rings200 # implies file globbing'
+  print '    rg2 -p rings200 -m 100 # implies file globbing with 100 files at most'
+  print '    rg2 -p N200M0M250 -b 1000000 -e 5000000 -s 100000 # implies simple loop'
+  print '    rg2 -p N200M0M250 -b 1000000 # single file N200M0M250.1000000'
+  print '    rg2 -p N400M200M0 -b 5 -e 10 -m 50 # uniform on log with 50 files'
+  print ''
+  print '  When the -m option is specified with -b and -e a logarithmic scale is'
+  print '  assumed. The -m option without -b and -e implies file globbing while -b'
+  print '  and -e with -s implies a simple loop.'
+
+try:
+  options, args = getopt.getopt(sys.argv[1:], 'hp:m:b:e:s:xrc:', \
+                               ['help', 'prefix=', 'xyz', 'ratios', 'Mrings=', 'Mlinear=', 'case=', 'pos'])
+except getopt.GetoptError, err:
+  print str(err)
+  usage()
+  sys.exit(2)
+
+# defaults
+prefix = ''
+m = -1
+b = -1
+e = -1
+s = -1
+xyz = False
+eigen = False
+Mrings = -1
+Mlinear = -1
+case = ''
+pos = False
+fmt = '# %10.1f (%.1f) %10.1f (%.1f)\n'
+fmt3 = '# %10.1f (%.1f) %10.1f (%.1f) %10.1f (%.1f)\n'
+
+# write out command line args
+f = open('.rg2_' + str(int(time.time())), 'w')
+print >> f, time.asctime()
+print >> f, 'rg2 ' + ' '.join(sys.argv[1:])
+f.close()
+
+for option, value in options:
+  if option in ('-h', '--help'):
+    usage()
+    sys.exit(1)
+  elif option in ('-p', '--prefix'):
+    prefix = value
+  elif option in ('-m'):
+    m = int(value)
+  elif option in ('-b'):
+    b = int(value)
+  elif option in ('-e'):
+    e = int(value)
+  elif option in ('-s'):
+    s = int(value)
+  elif option in ('-x', '--xyz'):
+    xyz = True
+  elif option in ('-r', '--ratios'):
+    eigen = True
+  elif option in ('--Mrings'):
+    Mrings = int(value)
+  elif option in ('--Mlinear'):
+    Mlinear = int(value)
+  elif option in ('-c', '--case'):
+    case = value
+  elif option in ('--pos'):
+    pos = True
+  else:
+    assert False, 'Command line error.'
+
+if(prefix == '' and not pos):
+  sys.stdout.write('Must define prefix unless using --pos. Exiting ...\n')
+  sys.exit(1)
+if(b == -1 and e == -1): blockfiles_method = 1
+elif(b != -1 and e != -1 and s != -1): blockfiles_method = 2
+elif(b != -1 and e == -1 and s == -1): blockfiles_method = 3
+elif(b != -1 and e != -1 and s == -1): blockfiles_method = 4
+else: sys.stdout.write('Case not found. Exiting ...'); sys.exit(1)
+
+if(blockfiles_method == 1):
+
+  existingfiles = glob.glob(prefix + '*')
+  existingfiles = filter(lambda u: u[u.rindex('.') + 1:].isdigit(), existingfiles)
+  existingfiles.sort(lambda u, v: cmp(int(u[u.rindex('.') + 1:]), int(v[v.rindex('.') + 1:])))
+  blockfiles = existingfiles[::]
+  if(m != -1):
+    numfiles = len(blockfiles)
+    if(numfiles > m): blockfiles = blockfiles[::int(numfiles / float(m))]
+
+elif(blockfiles_method == 2):
+
+  if(pos):
+    blockfiles = [prefix + str(i) + '.pos' for i in range(b, e + s, s)]
+  else:
+    blockfiles = [prefix + '.' + str(i) for i in range(b, e + s, s)]
+
+elif(blockfiles_method == 3):
+
+  blockfiles = [prefix + '.' + str(b)]
+
+elif(blockfiles_method == 4):
+
+  # exponent of first and last decade (assumes power of ten i.e., 10**start_exp is first file)
+  step = float(e - b) / (m - 1)
+  uniform_time = [10**(b + step * i) for i in range(m)]
+  existingfiles = glob.glob(prefix + '*')
+  existingfiles = filter(lambda u: u[u.rindex('.') + 1:].isdigit(), existingfiles)
+  existingfiles = [int(u[u.rindex('.') + 1:]) for u in existingfiles]
+  existingfiles.sort()
+  uniform_time = [pypolymer.find_closest_existing_file(existingfiles, u) for u in uniform_time]
+  uniform_time = pypolymer.unique(uniform_time)
+  blockfiles = [prefix + '.' + str(u) for u in uniform_time]
+
+else:
+
+  sys.stderr.write('ERROR: blockfiles_method\n')
+  sys.exit(1)
+
+if(blockfiles == []):
+  sys.stderr.write('Blockfiles is empty. Exiting ...\n')
+  sys.exit(1)
+
+if(not all([os.path.isfile(f) for f in blockfiles])):
+  sys.stderr.write('One or more files not found. Exiting ...\n')
+  sys.exit(1)
+
+sys.stdout.write('\n\n')
+sys.stdout.write('=================================================\n')
+sys.stdout.write('                        Rg2                      \n')
+sys.stdout.write('=================================================\n')
+sys.stdout.write('\n\nTotal number of files: ' + str(len(blockfiles)) + '\n')
+if(len(blockfiles) > 2):
+  sys.stdout.write('  blockfiles[0] = ' + blockfiles[0] + '\n')
+  sys.stdout.write('  blockfiles[1] = ' + blockfiles[1] + '\n')
+  sys.stdout.write('  blockfiles[2] = ' + blockfiles[2] + '\n')
+  sys.stdout.write('  ...' + '\n')
+  sys.stdout.write('  blockfiles[-3] = ' + blockfiles[-3] + '\n')
+  sys.stdout.write('  blockfiles[-2] = ' + blockfiles[-2] + '\n')
+  sys.stdout.write('  blockfiles[-1] = ' + blockfiles[-1] + '\n\n')
+
+# initialize the lists (time, Rgsq, Resq)
+time_rsq_rings = []
+time_rsq_rings_x = []
+time_rsq_rings_y = []
+time_rsq_rings_z = []
+time_rsq_linear = []
+time_rsq_linear_x = []
+time_rsq_linear_y = []
+time_rsq_linear_z = []
+
+for file in blockfiles:
+
+  fmanager = pypolymer.read_blockfile(file)
+  timestep = fmanager[0]
+  total_particles = fmanager[1]
+  M_rings = fmanager[2]; M_linear = fmanager[3]
+  monomers = fmanager[4]; monomers_half = fmanager[5]
+  x = fmanager[6]; y = fmanager[7]; z = fmanager[8]
+
+  if(Mrings != -1): M_rings = Mrings
+  if(Mlinear != -1): M_linear = Mlinear
+
+  if(file == blockfiles[0]):
+    total_particles1st = total_particles
+    sys.stdout.write('System parameters:\n')
+    sys.stdout.write('  M_rings = ' + str(M_rings) + '\n')
+    sys.stdout.write('  M_linear = ' + str(M_linear) + '\n')
+    sys.stdout.write('  N = ' + str(monomers) + '\n')
+    sys.stdout.write('  N/2 = ' + str(monomers_half) + '\n\n')
+  if(total_particles1st != total_particles):
+    sys.stderr.write('Change in total_particles (' + str(total_particles) + ').\n')
+    sys.exit(1)
+
+  sys.stdout.write('Working on ' + file + ' ...\n')
+
+  if(M_rings != 0):
+    # loop over rings
+    radsq = 0.0
+    radsq_x = 0.0
+    radsq_y = 0.0
+    radsq_z = 0.0
+    spansq = 0.0
+    spansq_x = 0.0
+    spansq_y = 0.0
+    spansq_z = 0.0
+    lambda1 = 0.0
+    lambda2 = 0.0
+    lambda3 = 0.0
+    for i in range(M_rings):
+
+      # compute center-of-mass
+      xcm = 0.0; ycm = 0.0; zcm = 0.0
+      for j in range(monomers):
+	p = i * monomers + j
+	xcm = xcm + x[p]
+	ycm = ycm + y[p]
+	zcm = zcm + z[p]
+      xcm = xcm / monomers
+      ycm = ycm / monomers
+      zcm = zcm / monomers
+
+      # sum the squares
+      for j in range(monomers):
+	p = i * monomers + j
+	radsq = radsq + (x[p] - xcm)**2 + (y[p] - ycm)**2 + (z[p] - zcm)**2
+        if(xyz):
+	  radsq_x = radsq_x + (x[p] - xcm)**2
+	  radsq_y = radsq_y + (y[p] - ycm)**2
+	  radsq_z = radsq_z + (z[p] - zcm)**2
+
+      # compute spanning distances squared
+      for j in range(monomers_half):
+        p1 = i * monomers + j
+        p2 = p1 + monomers_half
+        spansq = spansq + (x[p1] - x[p2])**2 + (y[p1] - y[p2])**2 + (z[p1] - z[p2])**2
+        if(xyz):
+          spansq_x = spansq_x + (x[p1] - x[p2])**2
+          spansq_y = spansq_y + (y[p1] - y[p2])**2
+          spansq_z = spansq_z + (z[p1] - z[p2])**2
+
+      if(eigen):
+        # initialize the tensor
+        S = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+
+	# loop over components and then particles
+	for j in xrange(monomers):
+	  p = i * monomers + j
+	  S[0][0] += (x[p] - xcm) * (x[p] - xcm)
+	  S[0][1] += (x[p] - xcm) * (y[p] - ycm)
+	  S[0][2] += (x[p] - xcm) * (z[p] - zcm)
+	  S[1][0] += (y[p] - ycm) * (x[p] - xcm)
+	  S[1][1] += (y[p] - ycm) * (y[p] - ycm)
+	  S[1][2] += (y[p] - ycm) * (z[p] - zcm)
+	  S[2][0] += (z[p] - zcm) * (x[p] - xcm)
+	  S[2][1] += (z[p] - zcm) * (y[p] - ycm)
+	  S[2][2] += (z[p] - zcm) * (z[p] - zcm)
+
+	# normalize
+	for m in [0, 1, 2]:
+	  for n in [0, 1, 2]:
+	    S[m][n] = S[m][n] / monomers
+
+	# convert to a numpy array, compute eigenvalues and sort
+	P = numpy.array(S)
+	eigvals = numpy.linalg.eigvalsh(P)
+	eigvals.sort()
+
+	# following the convention of Vettorel et al. 2009
+	lambda1 = lambda1 + eigvals[2]
+	lambda2 = lambda2 + eigvals[1]
+	lambda3 = lambda3 + eigvals[0]
+
+    # compute radius of gyration squared
+    RGsq = radsq / (M_rings * monomers)
+    if(xyz):
+      RGsq_x = radsq_x / (M_rings * monomers)
+      RGsq_y = radsq_y / (M_rings * monomers)
+      RGsq_z = radsq_z / (M_rings * monomers)
+
+    # compute diameter squared
+    REsq = spansq / (M_rings * monomers_half)
+    if(xyz):
+      REsq_x = spansq_x / (M_rings * monomers_half)
+      REsq_y = spansq_y / (M_rings * monomers_half)
+      REsq_z = spansq_z / (M_rings * monomers_half)
+
+    # compute eigenvalues
+    if(eigen):
+      lambda1 = lambda1 / M_rings
+      lambda2 = lambda2 / M_rings
+      lambda3 = lambda3 / M_rings
+
+    # append to list
+    if(eigen):
+      time_rsq_rings.append((timestep, RGsq, REsq, lambda1, lambda2, lambda3))
+      if(xyz):
+	time_rsq_rings_x.append((timestep, RGsq_x, REsq_x))
+	time_rsq_rings_y.append((timestep, RGsq_y, REsq_y))
+	time_rsq_rings_z.append((timestep, RGsq_z, REsq_z))
+    else:
+      time_rsq_rings.append((timestep, RGsq, REsq))
+      if(xyz):
+	time_rsq_rings_x.append((timestep, RGsq_x, REsq_x))
+	time_rsq_rings_y.append((timestep, RGsq_y, REsq_y))
+	time_rsq_rings_z.append((timestep, RGsq_z, REsq_z))
+
+  if(M_linear != 0):
+    # loop over linear chains
+    radsq = 0.0
+    radsq_x = 0.0
+    radsq_y = 0.0
+    radsq_z = 0.0
+    spansq = 0.0
+    spansq_x = 0.0
+    spansq_y = 0.0
+    spansq_z = 0.0
+    lambda1 = 0.0
+    lambda2 = 0.0
+    lambda3 = 0.0
+    for i in range(M_linear):
+
+      # compute center-of-mass
+      xcm = 0.0; ycm = 0.0; zcm = 0.0
+      for j in range(monomers):
+	p = M_rings * monomers + i * monomers + j
+	xcm = xcm + x[p]
+	ycm = ycm + y[p]
+	zcm = zcm + z[p]
+      xcm = xcm / monomers
+      ycm = ycm / monomers
+      zcm = zcm / monomers
+
+      # sum the squares
+      for j in range(monomers):
+        p = M_rings * monomers + i * monomers + j
+        radsq = radsq + (x[p] - xcm)**2 + (y[p] - ycm)**2 + (z[p] - zcm)**2
+        if(xyz):
+          radsq_x = radsq_x + (x[p] - xcm)**2
+          radsq_y = radsq_y + (y[p] - ycm)**2
+          radsq_z = radsq_z + (z[p] - zcm)**2
+
+      # compute end-to-end distance squared
+      p1 = M_rings * monomers + i * monomers
+      p2 = p1 + monomers - 1
+      spansq = spansq + (x[p1] - x[p2])**2 + (y[p1] - y[p2])**2 + (z[p1] - z[p2])**2
+      if(xyz):
+        spansq_x = spansq_x + (x[p1] - x[p2])**2
+        spansq_y = spansq_y + (y[p1] - y[p2])**2
+        spansq_z = spansq_z + (z[p1] - z[p2])**2
+
+      if(eigen):
+        # initialize the tensor
+        S = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+
+        # loop over components and then particles
+	for j in xrange(monomers):
+	  p = M_rings * monomers + i * monomers + j
+	  S[0][0] += (x[p] - xcm) * (x[p] - xcm)
+	  S[0][1] += (x[p] - xcm) * (y[p] - ycm)
+          S[0][2] += (x[p] - xcm) * (z[p] - zcm)
+          S[1][0] += (y[p] - ycm) * (x[p] - xcm)
+          S[1][1] += (y[p] - ycm) * (y[p] - ycm)
+          S[1][2] += (y[p] - ycm) * (z[p] - zcm)
+          S[2][0] += (z[p] - zcm) * (x[p] - xcm)
+          S[2][1] += (z[p] - zcm) * (y[p] - ycm)
+          S[2][2] += (z[p] - zcm) * (z[p] - zcm)
+
+        # normalize
+        for m in [0, 1, 2]:
+          for n in [0, 1, 2]:
+            S[m][n] = S[m][n] / monomers
+
+        # convert to a numpy array, compute eigenvalues and sort
+        P = numpy.array(S)
+        eigvals = numpy.linalg.eigvalsh(P)
+        eigvals.sort()
+
+        # following the convention of Vettorel et al. 2009
+        lambda1 = lambda1 + eigvals[2]
+        lambda2 = lambda2 + eigvals[1]
+        lambda3 = lambda3 + eigvals[0]
+
+    # compute radius of gyration squared
+    RGsq = radsq / (M_linear * monomers)
+    if(xyz):
+      RGsq_x = radsq_x / (M_linear * monomers)
+      RGsq_y = radsq_y / (M_linear * monomers)
+      RGsq_z = radsq_z / (M_linear * monomers)
+
+    # compute end-to-end distance squared
+    REsq = spansq / M_linear
+    if(xyz):
+      REsq_x = spansq_x / M_linear
+      REsq_y = spansq_y / M_linear
+      REsq_z = spansq_z / M_linear
+
+    # compute eigenvalues
+    if(eigen):
+      lambda1 = lambda1 / M_linear
+      lambda2 = lambda2 / M_linear
+      lambda3 = lambda3 / M_linear
+
+    # append to list
+    if(eigen):
+      time_rsq_linear.append((timestep, RGsq, REsq, lambda1, lambda2, lambda3))
+      if(xyz):
+        time_rsq_linear_x.append((timestep, RGsq_x, REsq_x))
+        time_rsq_linear_y.append((timestep, RGsq_y, REsq_y))
+        time_rsq_linear_z.append((timestep, RGsq_z, REsq_z))
+    else:
+      time_rsq_linear.append((timestep, RGsq, REsq))
+      if(xyz):
+	time_rsq_linear_x.append((timestep, RGsq_x, REsq_x))
+	time_rsq_linear_y.append((timestep, RGsq_y, REsq_y))
+	time_rsq_linear_z.append((timestep, RGsq_z, REsq_z))
+
+# outfile
+MringsMlinear = 'M' + str(M_rings) + 'M' + str(M_linear)
+
+if(M_rings != 0):
+
+  # compute the averages
+  ave_RGsq = 0.0
+  ave_REsq = 0.0
+  ave_lambda1 = 0.0
+  ave_lambda2 = 0.0
+  ave_lambda3 = 0.0
+  ave_RGsq_x = 0.0
+  ave_RGsq_y = 0.0
+  ave_RGsq_z = 0.0
+  ave_REsq_x = 0.0
+  ave_REsq_y = 0.0
+  ave_REsq_z = 0.0
+  for i in range(len(time_rsq_rings)):
+    ave_RGsq = ave_RGsq + time_rsq_rings[i][1]
+    ave_REsq = ave_REsq + time_rsq_rings[i][2]
+    if(eigen):
+      ave_lambda1 = ave_lambda1 + time_rsq_rings[i][3]
+      ave_lambda2 = ave_lambda2 + time_rsq_rings[i][4]
+      ave_lambda3 = ave_lambda3 + time_rsq_rings[i][5]
+    if(xyz):
+      ave_RGsq_x = ave_RGsq_x + time_rsq_rings_x[i][1]
+      ave_RGsq_y = ave_RGsq_y + time_rsq_rings_y[i][1]
+      ave_RGsq_z = ave_RGsq_z + time_rsq_rings_z[i][1]
+      ave_REsq_x = ave_REsq_x + time_rsq_rings_x[i][2]
+      ave_REsq_y = ave_REsq_y + time_rsq_rings_y[i][2]
+      ave_REsq_z = ave_REsq_z + time_rsq_rings_z[i][2]
+  ave_RGsq = ave_RGsq / len(time_rsq_rings)
+  ave_REsq = ave_REsq / len(time_rsq_rings)
+  if(eigen):
+    ave_lambda1 = ave_lambda1 / len(time_rsq_rings)
+    ave_lambda2 = ave_lambda2 / len(time_rsq_rings)
+    ave_lambda3 = ave_lambda3 / len(time_rsq_rings)
+  if(xyz):
+    ave_RGsq_x = ave_RGsq_x / len(time_rsq_rings_x)
+    ave_RGsq_y = ave_RGsq_y / len(time_rsq_rings_y)
+    ave_RGsq_z = ave_RGsq_z / len(time_rsq_rings_z)
+    ave_REsq_x = ave_REsq_x / len(time_rsq_rings_x)
+    ave_REsq_y = ave_REsq_y / len(time_rsq_rings_y)
+    ave_REsq_z = ave_REsq_z / len(time_rsq_rings_z)
+
+  # compute the standard deviations
+  Gsq = 0.0
+  Esq = 0.0
+  L1sq = 0.0
+  L2sq = 0.0
+  L3sq = 0.0
+  Gsq_x = 0.0
+  Gsq_y = 0.0
+  Gsq_z = 0.0
+  Esq_x = 0.0
+  Esq_y = 0.0
+  Esq_z = 0.0
+  for i in range(len(time_rsq_rings)):
+    Gsq = Gsq + (time_rsq_rings[i][1] - ave_RGsq)**2
+    Esq = Esq + (time_rsq_rings[i][2] - ave_REsq)**2
+    if(eigen):
+      L1sq = L1sq + (time_rsq_rings[i][3] - ave_lambda1)**2
+      L2sq = L2sq + (time_rsq_rings[i][4] - ave_lambda2)**2
+      L3sq = L3sq + (time_rsq_rings[i][5] - ave_lambda3)**2
+    if(xyz):
+      Gsq_x = Gsq_x + (time_rsq_rings_x[i][1] - ave_RGsq_x)**2
+      Gsq_y = Gsq_y + (time_rsq_rings_y[i][1] - ave_RGsq_y)**2
+      Gsq_z = Gsq_z + (time_rsq_rings_z[i][1] - ave_RGsq_z)**2
+      Esq_x = Esq_x + (time_rsq_rings_x[i][2] - ave_REsq_x)**2
+      Esq_y = Esq_y + (time_rsq_rings_y[i][2] - ave_REsq_y)**2
+      Esq_z = Esq_z + (time_rsq_rings_z[i][2] - ave_REsq_z)**2
+  RGsq_error = math.sqrt(Gsq / len(time_rsq_rings))
+  REsq_error = math.sqrt(Esq / len(time_rsq_rings))
+  if(eigen):
+    L1sq_error = math.sqrt(L1sq / len(time_rsq_rings))
+    L2sq_error = math.sqrt(L2sq / len(time_rsq_rings))
+    L3sq_error = math.sqrt(L3sq / len(time_rsq_rings))
+  if(xyz):
+    RGsq_error_x = math.sqrt(Gsq_x / len(time_rsq_rings_x))
+    RGsq_error_y = math.sqrt(Gsq_y / len(time_rsq_rings_y))
+    RGsq_error_z = math.sqrt(Gsq_z / len(time_rsq_rings_z))
+    REsq_error_x = math.sqrt(Esq_x / len(time_rsq_rings_x))
+    REsq_error_y = math.sqrt(Esq_y / len(time_rsq_rings_y))
+    REsq_error_z = math.sqrt(Esq_z / len(time_rsq_rings_z))
+
+  # write data to file
+  outfile = 'RG2RE2_' + MringsMlinear + 'N' + str(monomers) + case + '_rings.dat'
+  fout = open(outfile, 'w')
+  fout.write('# ' + time.asctime() + '\n')
+  fout.write('# ' + os.getcwd() + '\n')
+  fout.write('# M_rings M_linear monomers\n')
+  fout.write('# ' + str(M_rings) + ' ' + str(M_linear) + ' ' + str(monomers) + '\n')
+  fout.write('# RGsq is the radius of gyration squared\n')
+  fout.write('# REsq is the diameter squared\n#\n')
+  fout.write('# time in tau\n')
+  fout.write('# ave_RGsq, RGsq_error, ave_REsq and REsq_error in sigma**2\n')
+  fout.write('# RGsq_error and REsq_error correspond to one standard deviation.\n#\n')
+  fout.write('# ave_RGsq RGsq_error ave_REsq REsq_error\n')
+  fout.write(fmt % (ave_RGsq, RGsq_error, ave_REsq, REsq_error))
+  if(eigen):
+    # average eigenvalues
+    fout.write('# lambda1 lambda1_err lambda2 lambda2_err lambda3 lambda3_err\n')
+    fout.write(fmt3 % (ave_lambda1, L1sq_error, ave_lambda2, L2sq_error, ave_lambda3, L3sq_error))
+    # average eigenvalue ratios
+    fout.write('# lambda13 lambda23\n')
+    L13_err = 0.5 * ((ave_lambda1 + L1sq_error)/(ave_lambda3 - L3sq_error) - (ave_lambda1 - L1sq_error)/(ave_lambda3 + L3sq_error))
+    L23_err = 0.5 * ((ave_lambda2 + L2sq_error)/(ave_lambda3 - L3sq_error) - (ave_lambda2 - L2sq_error)/(ave_lambda3 + L3sq_error))
+    fout.write('# %10.1f (%.1f) %10.1f (%.1f)\n' % (ave_lambda1/ave_lambda3, L13_err, ave_lambda2/ave_lambda3, L23_err))
+  fout.write('# time (tau)  RGsq (sigma**2)  REsq (sigma**2)\n')
+  for rec in time_rsq_rings:
+    fout.write('%10d %8.2f %8.2f\n' % (rec[0], rec[1], rec[2]))
+  fout.close()
+  sys.stdout.write(outfile + ' has been written to disk.\n')
+
+  if(xyz):
+    # write data to file x
+    outfile = 'RG2RE2_' + MringsMlinear + 'N' + str(monomers) + case + '_rings_x.dat'
+    fout = open(outfile, 'w')
+    fout.write('# ' + time.asctime() + '\n')
+    fout.write('# ' + os.getcwd() + '\n')
+    fout.write('# M_rings M_linear monomers\n')
+    fout.write('# ' + str(M_rings) + ' ' + str(M_linear) + ' ' + str(monomers) + '\n')
+    fout.write('# RGsq is the radius of gyration squared\n')
+    fout.write('# REsq is the diameter squared\n#\n')
+    fout.write('# time in tau\n')
+    fout.write('# ave_RGsq, RGsq_error, ave_REsq and REsq_error in sigma**2\n')
+    fout.write('# RGsq_error and REsq_error correspond to one standard deviation.\n#\n')
+    fout.write('# ave_RGsq_x RGsq_error_x ave_REsq_x REsq_error_x\n')
+    fout.write(fmt % (ave_RGsq_x, RGsq_error_x, ave_REsq_x, REsq_error_x))
+    fout.write('# time (tau)  RGsq (sigma**2)  REsq (sigma**2)\n')
+    for rec in time_rsq_rings_x:
+      fout.write('%10d %8.2f %8.2f\n' % (rec[0], rec[1], rec[2]))
+    fout.close()
+    sys.stdout.write(outfile + ' has been written to disk.\n')
+
+    # write data to file y
+    outfile = 'RG2RE2_' + MringsMlinear + 'N' + str(monomers) + case + '_rings_y.dat'
+    fout = open(outfile, 'w')
+    fout.write('# ' + time.asctime() + '\n')
+    fout.write('# ' + os.getcwd() + '\n')
+    fout.write('# M_rings M_linear monomers\n')
+    fout.write('# ' + str(M_rings) + ' ' + str(M_linear) + ' ' + str(monomers) + '\n')
+    fout.write('# RGsq is the radius of gyration squared\n')
+    fout.write('# REsq is the diameter squared\n#\n')
+    fout.write('# time in tau\n')
+    fout.write('# ave_RGsq, RGsq_error, ave_REsq and REsq_error in sigma**2\n')
+    fout.write('# RGsq_error and REsq_error correspond to one standard deviation.\n#\n')
+    fout.write('# ave_RGsq_y RGsq_error_y ave_REsq_y REsq_error_y\n')
+    fout.write(fmt % (ave_RGsq_y, RGsq_error_y, ave_REsq_y, REsq_error_y))
+    fout.write('# time (tau)  RGsq (sigma**2)  REsq (sigma**2)\n')
+    for rec in time_rsq_rings_y:
+      fout.write('%10d %8.2f %8.2f\n' % (rec[0], rec[1], rec[2]))
+    fout.close()
+    sys.stdout.write(outfile + ' has been written to disk.\n')
+
+    # write data to file z
+    outfile = 'RG2RE2_' + MringsMlinear + 'N' + str(monomers) + case + '_rings_z.dat'
+    fout = open(outfile, 'w')
+    fout.write('# ' + time.asctime() + '\n')
+    fout.write('# ' + os.getcwd() + '\n')
+    fout.write('# M_rings M_linear monomers\n')
+    fout.write('# ' + str(M_rings) + ' ' + str(M_linear) + ' ' + str(monomers) + '\n')
+    fout.write('# RGsq is the radius of gyration squared\n')
+    fout.write('# REsq is the diameter squared\n#\n')
+    fout.write('# time in tau\n')
+    fout.write('# ave_RGsq, RGsq_error, ave_REsq and REsq_error in sigma**2\n')
+    fout.write('# RGsq_error and REsq_error correspond to one standard deviation.\n#\n')
+    fout.write('# ave_RGsq_z RGsq_error_z ave_REsq_z REsq_error_z\n')
+    fout.write(fmt % (ave_RGsq_z, RGsq_error_z, ave_REsq_z, REsq_error_z))
+    fout.write('# time (tau)  RGsq (sigma**2)  REsq (sigma**2)\n')
+    for rec in time_rsq_rings_z:
+      fout.write('%10d %8.2f %8.2f\n' % (rec[0], rec[1], rec[2]))
+    fout.close()
+    sys.stdout.write(outfile + ' has been written to disk.\n')
+
+if(M_linear != 0):
+
+  # compute the averages
+  ave_RGsq = 0.0
+  ave_REsq = 0.0
+  ave_lambda1 = 0.0    
+  ave_lambda2 = 0.0
+  ave_lambda3 = 0.0
+  ave_RGsq_x = 0.0
+  ave_RGsq_y = 0.0
+  ave_RGsq_z = 0.0
+  ave_REsq_x = 0.0
+  ave_REsq_y = 0.0
+  ave_REsq_z = 0.0
+  for i in range(len(time_rsq_linear)):
+    ave_RGsq = ave_RGsq + time_rsq_linear[i][1]
+    ave_REsq = ave_REsq + time_rsq_linear[i][2]
+    if(eigen):
+      ave_lambda1 = ave_lambda1 + time_rsq_linear[i][3]
+      ave_lambda2 = ave_lambda2 + time_rsq_linear[i][4]
+      ave_lambda3 = ave_lambda3 + time_rsq_linear[i][5]
+    if(xyz):
+      ave_RGsq_x = ave_RGsq_x + time_rsq_linear_x[i][1]
+      ave_RGsq_y = ave_RGsq_y + time_rsq_linear_y[i][1]
+      ave_RGsq_z = ave_RGsq_z + time_rsq_linear_z[i][1]
+      ave_REsq_x = ave_REsq_x + time_rsq_linear_x[i][2]
+      ave_REsq_y = ave_REsq_y + time_rsq_linear_y[i][2]
+      ave_REsq_z = ave_REsq_z + time_rsq_linear_z[i][2]
+  ave_RGsq = ave_RGsq / len(time_rsq_linear)
+  ave_REsq = ave_REsq / len(time_rsq_linear)
+  if(eigen):
+    ave_lambda1 = ave_lambda1 / len(time_rsq_linear)   
+    ave_lambda2 = ave_lambda2 / len(time_rsq_linear)
+    ave_lambda3 = ave_lambda3 / len(time_rsq_linear)
+  if(xyz):
+    ave_RGsq_x = ave_RGsq_x / len(time_rsq_linear_x)
+    ave_RGsq_y = ave_RGsq_y / len(time_rsq_linear_y)
+    ave_RGsq_z = ave_RGsq_z / len(time_rsq_linear_z)
+    ave_REsq_x = ave_REsq_x / len(time_rsq_linear_x)
+    ave_REsq_y = ave_REsq_y / len(time_rsq_linear_y)
+    ave_REsq_z = ave_REsq_z / len(time_rsq_linear_z)
+
+  # compute the standard deviations
+  Gsq = 0
+  Esq = 0
+  L1sq = 0.0
+  L2sq = 0.0
+  L3sq = 0.0
+  Gsq_x = 0
+  Gsq_y = 0
+  Gsq_z = 0
+  Esq_x = 0
+  Esq_y = 0
+  Esq_z = 0
+  for i in range(len(time_rsq_linear)):
+    Gsq = Gsq + (time_rsq_linear[i][1] - ave_RGsq)**2
+    Esq = Esq + (time_rsq_linear[i][2] - ave_REsq)**2
+    if(eigen):
+      L1sq = L1sq + (time_rsq_linear[i][3] - ave_lambda1)**2
+      L2sq = L2sq + (time_rsq_linear[i][4] - ave_lambda2)**2
+      L3sq = L3sq + (time_rsq_linear[i][5] - ave_lambda3)**2
+    if(xyz):
+      Gsq_x = Gsq_x + (time_rsq_linear_x[i][1] - ave_RGsq_x)**2
+      Gsq_y = Gsq_y + (time_rsq_linear_y[i][1] - ave_RGsq_y)**2
+      Gsq_z = Gsq_z + (time_rsq_linear_z[i][1] - ave_RGsq_z)**2
+      Esq_x = Esq_x + (time_rsq_linear_x[i][2] - ave_REsq_x)**2
+      Esq_y = Esq_y + (time_rsq_linear_y[i][2] - ave_REsq_y)**2
+      Esq_z = Esq_z + (time_rsq_linear_z[i][2] - ave_REsq_z)**2
+  RGsq_error = math.sqrt(Gsq / len(time_rsq_linear))
+  REsq_error = math.sqrt(Esq / len(time_rsq_linear))
+  if(eigen):
+    L1sq_error = math.sqrt(L1sq / len(time_rsq_linear))
+    L2sq_error = math.sqrt(L2sq / len(time_rsq_linear))
+    L3sq_error = math.sqrt(L3sq / len(time_rsq_linear))
+  if(xyz):
+    RGsq_error_x = math.sqrt(Gsq_x / len(time_rsq_linear_x))
+    RGsq_error_y = math.sqrt(Gsq_y / len(time_rsq_linear_y))
+    RGsq_error_z = math.sqrt(Gsq_z / len(time_rsq_linear_z))
+    REsq_error_x = math.sqrt(Esq_x / len(time_rsq_linear_x))
+    REsq_error_y = math.sqrt(Esq_y / len(time_rsq_linear_y))
+    REsq_error_z = math.sqrt(Esq_z / len(time_rsq_linear_z))
+
+  # write data to file
+  outfile = 'RG2RE2_' + MringsMlinear + 'N' + str(monomers) + case + '_linear.dat'
+  fout = open(outfile, 'w')
+  fout.write('# ' + time.asctime() + '\n')
+  fout.write('# ' + os.getcwd() + '\n')
+  fout.write('# M_rings M_linear monomers\n')
+  fout.write('# ' + str(M_rings) + ' ' + str(M_linear) + ' ' + str(monomers) + '\n')
+  fout.write('# RGsq is the radius of gyration squared\n')
+  fout.write('# REsq is the end-to-end distance squared\n#\n')
+  fout.write('# time in tau\n')
+  fout.write('# ave_RGsq, RGsq_error, ave_REsq and REsq_error in sigma**2\n')
+  fout.write('# RGsq_error and REsq_error correspond to one standard deviation.\n#\n')
+  fout.write('# ave_RGsq RGsq_error ave_REsq REsq_error\n')
+  fout.write(fmt % (ave_RGsq, RGsq_error, ave_REsq, REsq_error))
+  if(eigen):
+    # average eigenvalues
+    fout.write('# lambda1 lambda1_err lambda2 lambda2_err lambda3 lambda3_err\n')
+    fout.write(fmt3 % (ave_lambda1, L1sq_error, ave_lambda2, L2sq_error, ave_lambda3, L3sq_error))
+    # average eigenvalue ratios
+    fout.write('# lambda13 lambda23\n')
+    L13_err = 0.5 * ((ave_lambda1 + L1sq_error)/(ave_lambda3 - L3sq_error) - (ave_lambda1 - L1sq_error)/(ave_lambda3 + L3sq_error))
+    L23_err = 0.5 * ((ave_lambda2 + L2sq_error)/(ave_lambda3 - L3sq_error) - (ave_lambda2 - L2sq_error)/(ave_lambda3 + L3sq_error))
+    fout.write('# %10.1f (%.1f) %10.1f (%.1f)\n' % (ave_lambda1/ave_lambda3, L13_err, ave_lambda2/ave_lambda3, L23_err))
+  fout.write('# time (tau)  RGsq (sigma**2)  REsq (sigma**2)\n')
+  for rec in time_rsq_linear:
+    fout.write('%10d %8.2f %8.2f\n' % (rec[0], rec[1], rec[2]))
+  fout.close()
+  sys.stdout.write(outfile + ' has been written to disk.\n')
+
+  if(xyz):
+    # write data to file x
+    outfile = 'RG2RE2_' + MringsMlinear + 'N' + str(monomers) + case + '_linear_x.dat'
+    fout = open(outfile, 'w')
+    fout.write('# ' + time.asctime() + '\n')
+    fout.write('# ' + os.getcwd() + '\n')
+    fout.write('# M_rings M_linear monomers\n')
+    fout.write('# ' + str(M_rings) + ' ' + str(M_linear) + ' ' + str(monomers) + '\n')
+    fout.write('# RGsq is the radius of gyration squared\n')
+    fout.write('# REsq is the end-to-end distance squared\n#\n')
+    fout.write('# time in tau\n')
+    fout.write('# ave_RGsq, RGsq_error, ave_REsq and REsq_error in sigma**2\n')
+    fout.write('# RGsq_error and REsq_error correspond to one standard deviation.\n#\n')
+    fout.write('# ave_RGsq_x RGsq_error_x ave_REsq_x REsq_error_x\n')
+    fout.write(fmt % (ave_RGsq_x, RGsq_error_x, ave_REsq_x, REsq_error_x))
+    fout.write('# time (tau)  RGsq (sigma**2)  REsq (sigma**2)\n')
+    for rec in time_rsq_linear_x:
+      fout.write('%10d %8.2f %8.2f\n' % (rec[0], rec[1], rec[2]))
+    fout.close()
+    sys.stdout.write(outfile + ' has been written to disk.\n')
+
+    # write data to file y
+    outfile = 'RG2RE2_' + MringsMlinear + 'N' + str(monomers) + case + '_linear_y.dat'
+    fout = open(outfile, 'w')
+    fout.write('# ' + time.asctime() + '\n')
+    fout.write('# ' + os.getcwd() + '\n')
+    fout.write('# M_rings M_linear monomers\n')
+    fout.write('# ' + str(M_rings) + ' ' + str(M_linear) + ' ' + str(monomers) + '\n')
+    fout.write('# RGsq is the radius of gyration squared\n')
+    fout.write('# REsq is the end-to-end distance squared\n#\n')
+    fout.write('# time in tau\n')
+    fout.write('# ave_RGsq, RGsq_error, ave_REsq and REsq_error in sigma**2\n')
+    fout.write('# RGsq_error and REsq_error correspond to one standard deviation.\n#\n')
+    fout.write('# ave_RGsq_y RGsq_error_y ave_REsq_y REsq_error_y\n')
+    fout.write(fmt % (ave_RGsq_y, RGsq_error_y, ave_REsq_y, REsq_error_y))
+    fout.write('# time (tau)  RGsq (sigma**2)  REsq (sigma**2)\n')
+    for rec in time_rsq_linear_y:
+      fout.write('%10d %8.2f %8.2f\n' % (rec[0], rec[1], rec[2]))
+    fout.close()
+    sys.stdout.write(outfile + ' has been written to disk.\n')
+
+    # write data to file z
+    outfile = 'RG2RE2_' + MringsMlinear + 'N' + str(monomers) + case + '_linear_z.dat'
+    fout = open(outfile, 'w')
+    fout.write('# ' + time.asctime() + '\n')
+    fout.write('# ' + os.getcwd() + '\n')
+    fout.write('# M_rings M_linear monomers\n')
+    fout.write('# ' + str(M_rings) + ' ' + str(M_linear) + ' ' + str(monomers) + '\n')
+    fout.write('# RGsq is the radius of gyration squared\n')
+    fout.write('# REsq is the end-to-end distance squared\n#\n')
+    fout.write('# time in tau\n')
+    fout.write('# ave_RGsq, RGsq_error, ave_REsq and REsq_error in sigma**2\n')
+    fout.write('# RGsq_error and REsq_error correspond to one standard deviation.\n#\n')
+    fout.write('# ave_RGsq_z RGsq_error_z ave_REsq_z REsq_error_z\n')
+    fout.write(fmt % (ave_RGsq_z, RGsq_error_z, ave_REsq_z, REsq_error_z))
+    fout.write('# time (tau)  RGsq (sigma**2)  REsq (sigma**2)\n')
+    for rec in time_rsq_linear_z:
+      fout.write('%10d %8.2f %8.2f\n' % (rec[0], rec[1], rec[2]))
+    fout.close()
+    sys.stdout.write(outfile + ' has been written to disk.\n')

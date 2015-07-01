@@ -1,0 +1,135 @@
+#!/usr/bin/env python
+
+"""This Python utility concatenates the off-diagonal components
+   from stress data files produced by LAMMPS over many job steps.
+
+   1. The stress file names are added to a list and sorted
+   2. The location of breaks are found
+   3. The data is added to a list while correcting the step"""
+
+import sys
+import time
+import getopt
+import glob
+
+def usage():
+  print 'reduce_stress:'
+  print '  -j, --job      First job step to be included'
+  print '  -p, --prefix   Prefix for output file name (prefix_pxy_pxz_pyz.dat)'
+  print '  -s, --spacing  Number of integration steps between stress values'
+  print '  -h, --help     Help menu'
+  print '                 Defaults: -s 1000 -p RENAME'
+  print '                 Example: tcsh% reduce_stress -j 10 -p 200_1 -s 1000'
+  print ''
+  print 'If -j is not specified then the script will use the first found'
+  print 'job step. This utility handles reset_timestep events by adding'
+  print 'the last step from the previous file.'
+
+try:
+  options, args = getopt.getopt(sys.argv[1:], 'hj:p:s:', ['help', 'job=', 'prefix=', 'spacing='])
+except getopt.GetoptError, err:
+  print str(err)
+  usage()
+  sys.exit(2)
+
+# defaults
+job_step_start = -1
+prefix = 'RENAME'
+spacing = 1000
+
+for option, value in options:
+  if option in ('-h', '--help'):
+    usage()
+    sys.exit()
+  elif option in ('-j', '--job'):
+    job_step_start = int(value)
+  elif option in ('-p', '--prefix'):
+    prefix = value
+  elif option in ('-s', '--spacing'):
+    spacing = int(value)
+  else:
+    assert False, 'Command line error.'
+
+pfiles = glob.glob('stress.dat.*')
+if(pfiles == []):
+  sys.stdout.write('No stress files found. Exiting.\n')
+  sys.exit(1)
+pfiles.sort(lambda u, v: cmp(int(u[u.rindex('.') + 1:]), int(v[v.rindex('.') + 1:])))
+if(job_step_start != -1):
+  start_file = 'stress.dat.' + str(job_step_start)
+  pfiles = pfiles[pfiles.index(start_file):]
+
+first = pfiles[0]
+firststep = int(first[first.rindex('.') + 1:])
+for i, pf in enumerate(pfiles):
+  jobstep = int(pf[pf.rindex('.') + 1:])
+  if(i + firststep != jobstep):
+    sys.stdout.write('WARNING: Job steps not continuous: ' + str(i + firststep) + ' ' + str(jobstep) + '\n')
+
+sys.stdout.write('\nFiles to be used:\n')
+for pf in pfiles:
+  sys.stdout.write('  ' + pf + '\n')
+
+# write out receipt
+f = open('.reduce_stress_' + str(int(time.time())), 'w')
+print >> f, time.asctime()
+print >> f, pfiles
+print >> f, job_step_start, prefix, spacing
+f.close()
+
+# make list of stress file name, starting step, ending step
+pf_start_end = []
+for pf in pfiles:
+  f = open(pf); data = f.readlines(); f.close()
+  data = filter(lambda u: not u.strip().startswith('#'), data)
+  start = int(data[0].split()[0])
+  end = int(data[-1].split()[0])
+  pf_start_end.append((pf, start, end))
+  
+# store first step of first file for consistency check below
+first_step = pf_start_end[0][1]
+
+# look for breaks
+index_of_last_pf_before_break = []
+prev_pf = pf_start_end[0][0]
+prev_end = pf_start_end[0][2]
+for u in pf_start_end[1:]:
+  if(prev_end + spacing != u[1]):
+    sys.stdout.write('\nBreak between ' + prev_pf + ' and ' + str(u[0]) + ':\n')
+    sys.stdout.write('  end step of ' + prev_pf + ' is ' + str(prev_end) + '\n')
+    sys.stdout.write('  start step of ' + u[0] + ' is ' + str(u[1]) + '\n')
+    index_of_last_pf_before_break.append(pfiles.index(prev_pf))
+  prev_pf = u[0]
+  prev_end = u[2]
+
+# the last file always counts as a break
+index_of_last_pf_before_break.append(pfiles.index(pfiles[-1]))
+
+# concatenate files and adjust step
+p = []
+makeup = 0
+start_idx = 0
+for idx in index_of_last_pf_before_break:
+  for pf in pfiles[start_idx: idx + 1]:
+    f = open(pf); data = f.readlines(); f.close()
+    data = filter(lambda u: not u.strip().startswith('#'), data)
+    for line in data:
+      step = int(line.split()[0]) + makeup
+      s = str(step) + ' ' + line.split()[4] + ' ' + line.split()[5] + ' ' + line.split()[6] + '\n'
+      p.append(s)
+  makeup = step
+  start_idx = idx + 1
+
+# consistency check
+sys.stdout.write('\nChecking for consistency ...')
+for i, line in enumerate(p):
+  if(first_step + i * spacing != int(line.split()[0])):
+    sys.stdout.write(' failed at i, line = ' + str(i) + ' ' + line)
+    sys.exit(1)
+sys.stdout.write(' passed.\n')
+
+# write data
+f = open(prefix + '_pxy_pxz_pyz.dat', 'w')
+f.writelines(p)
+f.close()
+sys.stdout.write('Concatenated stress file written to disk.\n')
